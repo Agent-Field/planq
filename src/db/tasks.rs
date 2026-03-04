@@ -8,17 +8,6 @@ use rusqlite::{params, OptionalExtension};
 use serde_json::{Map, Value};
 use std::collections::{HashMap, HashSet, VecDeque};
 
-const TASK_COLUMNS: &str = r#"
-id, project_id, parent_task_id, is_composite,
-title, description, status, kind, priority,
-agent_id, claimed_at, started_at, completed_at,
-result, error, progress, progress_note,
-max_retries, retry_count, retry_backoff, retry_delay_ms,
-timeout_seconds, heartbeat_interval, last_heartbeat,
-requires_approval, approval_status, approved_by, approval_comment,
-metadata, created_at, updated_at
-"#;
-
 const INSERT_TASK: &str = r#"
 INSERT INTO tasks (
   id, project_id, parent_task_id, is_composite,
@@ -127,8 +116,10 @@ WHERE id = ?1 AND status = 'claimed';
 
 const COMPLETE_TASK: &str = r#"
 UPDATE tasks
-SET status = 'done', result = ?2, error = NULL, completed_at = ?3, updated_at = ?3
-WHERE id = ?1 AND status = 'running';
+SET status = 'done', result = ?2, error = NULL, completed_at = ?3, updated_at = ?3,
+    claimed_at = COALESCE(claimed_at, ?3),
+    started_at = COALESCE(started_at, ?3)
+WHERE id = ?1 AND status IN ('ready', 'claimed', 'running');
 "#;
 
 const FAIL_TASK: &str = r#"
@@ -201,7 +192,6 @@ WHERE d.to_task = ?1
 ORDER BY t.completed_at ASC, t.created_at ASC;
 "#;
 
-const COUNT_TASKS_BY_STATUS: &str = "SELECT COUNT(1) FROM tasks WHERE status = ?1;";
 const SELECT_TASK_TITLES_LIKE: &str = r#"
 SELECT id, title
 FROM tasks
@@ -581,10 +571,16 @@ pub fn complete_task(
     };
     let changed = conn.execute(COMPLETE_TASK, params![task_id, result_json, now])?;
     if changed == 0 {
-        return Err(PlanqError::InvalidTransition(format!(
-            "task {task_id} must be running to complete"
-        ))
-        .into());
+        drop(conn);
+        let current = get_task(db, task_id);
+        let status_msg = match current {
+            Ok(t) => format!(
+                "task {} is '{}', must be ready/claimed/running to complete",
+                task_id, t.status
+            ),
+            Err(_) => format!("task {task_id} not found"),
+        };
+        return Err(PlanqError::InvalidTransition(status_msg).into());
     }
     drop(conn);
     get_task(db, task_id)
@@ -1354,16 +1350,4 @@ pub fn split_task(db: &Database, task_id: &str, parts: Vec<SplitPart>) -> Result
         done: done_ids,
         title_to_id,
     })
-}
-
-pub(crate) fn count_tasks_by_status(db: &Database, status: TaskStatus) -> Result<i64> {
-    let conn = db.lock()?;
-    let count: i64 = conn.query_row(COUNT_TASKS_BY_STATUS, params![status.to_string()], |r| {
-        r.get(0)
-    })?;
-    Ok(count)
-}
-
-pub(crate) fn _task_columns() -> &'static str {
-    TASK_COLUMNS
 }

@@ -176,3 +176,89 @@ fn sweeper_reclaims_retries_and_rolls_up_composites() {
     assert!(sweep.retried >= 1);
     assert!(sweep.composites_completed >= 1);
 }
+
+#[test]
+fn lenient_done_from_ready() {
+    let db_path = test_db_path();
+    let db = init_db(&db_path).unwrap();
+    let project = create_project(&db, "LenientReady", None, None).unwrap();
+
+    let task = create_task(
+        &db,
+        &make_task(&project.id, "ready->done", TaskStatus::Ready),
+        &[],
+    )
+    .unwrap();
+    let completed = complete_task(&db, &task.id, None).unwrap();
+
+    assert_eq!(completed.status, TaskStatus::Done);
+    assert!(completed.claimed_at.is_some());
+    assert!(completed.started_at.is_some());
+    assert!(completed.completed_at.is_some());
+}
+
+#[test]
+fn lenient_done_from_claimed() {
+    let db_path = test_db_path();
+    let db = init_db(&db_path).unwrap();
+    let project = create_project(&db, "LenientClaimed", None, None).unwrap();
+
+    let task = create_task(
+        &db,
+        &make_task(&project.id, "claimed->done", TaskStatus::Ready),
+        &[],
+    )
+    .unwrap();
+    let claimed = claim_task(&db, &task.id, "agent-a").unwrap().unwrap();
+    assert_eq!(claimed.status, TaskStatus::Claimed);
+    assert!(claimed.claimed_at.is_some());
+    assert!(claimed.started_at.is_none());
+
+    let completed = complete_task(&db, &task.id, None).unwrap();
+    assert_eq!(completed.status, TaskStatus::Done);
+    assert!(completed.claimed_at.is_some());
+    assert!(completed.started_at.is_some());
+    assert!(completed.completed_at.is_some());
+}
+
+#[test]
+fn lenient_done_from_running() {
+    let db_path = test_db_path();
+    let db = init_db(&db_path).unwrap();
+    let project = create_project(&db, "LenientRunning", None, None).unwrap();
+
+    let task = create_task(
+        &db,
+        &make_task(&project.id, "running->done", TaskStatus::Ready),
+        &[],
+    )
+    .unwrap();
+    claim_task(&db, &task.id, "agent-a").unwrap().unwrap();
+    let running = start_task(&db, &task.id).unwrap();
+    assert_eq!(running.status, TaskStatus::Running);
+
+    let completed = complete_task(&db, &task.id, None).unwrap();
+    assert_eq!(completed.status, TaskStatus::Done);
+    assert!(completed.claimed_at.is_some());
+    assert!(completed.started_at.is_some());
+    assert!(completed.completed_at.is_some());
+}
+
+#[test]
+fn done_rejects_pending() {
+    let db_path = test_db_path();
+    let db = init_db(&db_path).unwrap();
+    let project = create_project(&db, "LenientPending", None, None).unwrap();
+
+    let task = create_task(
+        &db,
+        &make_task(&project.id, "pending cannot complete", TaskStatus::Pending),
+        &[],
+    )
+    .unwrap();
+
+    let err = complete_task(&db, &task.id, None).unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("is 'pending'"));
+    assert!(msg.contains("ready/claimed/running"));
+}
