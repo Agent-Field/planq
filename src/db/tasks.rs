@@ -434,7 +434,17 @@ pub fn create_task(db: &Database, task: &Task, tags: &[String]) -> Result<Task> 
         conn.execute(INSERT_TASK_TAG, params![&task_id, tag])?;
     }
     drop(conn);
-    get_task(db, &task_id)
+    let task = get_task(db, &task_id)?;
+    let _ = crate::db::insert_event(
+        db,
+        Some(&task.id),
+        Some(&task.project_id),
+        task.agent_id.as_deref(),
+        crate::models::EventType::TaskCreated,
+        Some(serde_json::json!({"title": task.title})),
+        crate::db::now_utc_naive(),
+    );
+    Ok(task)
 }
 
 pub fn get_task(db: &Database, task_id: &str) -> Result<Task> {
@@ -535,22 +545,46 @@ pub fn list_tasks(db: &Database, filters: TaskListFilters) -> Result<Vec<Task>> 
 }
 
 pub fn claim_task(db: &Database, task_id: &str, agent_id: &str) -> Result<Option<Task>> {
-    let conn = db.lock()?;
-    let now = dt_to_sql(now_utc_naive());
-    let mut stmt = conn.prepare(CLAIM_TASK)?;
-    let task = stmt
-        .query_row(params![agent_id, now, task_id], row_to_task)
-        .optional()?;
+    let task = {
+        let conn = db.lock()?;
+        let now = dt_to_sql(now_utc_naive());
+        let mut stmt = conn.prepare(CLAIM_TASK)?;
+        stmt.query_row(params![agent_id, now, task_id], row_to_task)
+            .optional()?
+    };
+    if let Some(ref t) = task {
+        let _ = crate::db::insert_event(
+            db,
+            Some(&t.id),
+            Some(&t.project_id),
+            Some(agent_id),
+            crate::models::EventType::TaskClaimed,
+            None,
+            crate::db::now_utc_naive(),
+        );
+    }
     Ok(task)
 }
 
 pub fn claim_next_task(db: &Database, project_id: &str, agent_id: &str) -> Result<Option<Task>> {
-    let conn = db.lock()?;
-    let now = dt_to_sql(now_utc_naive());
-    let mut stmt = conn.prepare(CLAIM_NEXT_TASK)?;
-    let task = stmt
-        .query_row(params![agent_id, project_id, now], row_to_task)
-        .optional()?;
+    let task = {
+        let conn = db.lock()?;
+        let now = dt_to_sql(now_utc_naive());
+        let mut stmt = conn.prepare(CLAIM_NEXT_TASK)?;
+        stmt.query_row(params![agent_id, project_id, now], row_to_task)
+            .optional()?
+    };
+    if let Some(ref t) = task {
+        let _ = crate::db::insert_event(
+            db,
+            Some(&t.id),
+            Some(&t.project_id),
+            Some(agent_id),
+            crate::models::EventType::TaskClaimed,
+            None,
+            crate::db::now_utc_naive(),
+        );
+    }
     Ok(task)
 }
 
@@ -565,7 +599,17 @@ pub fn start_task(db: &Database, task_id: &str) -> Result<Task> {
         .into());
     }
     drop(conn);
-    get_task(db, task_id)
+    let task = get_task(db, task_id)?;
+    let _ = crate::db::insert_event(
+        db,
+        Some(&task.id),
+        Some(&task.project_id),
+        task.agent_id.as_deref(),
+        crate::models::EventType::TaskStarted,
+        None,
+        crate::db::now_utc_naive(),
+    );
+    Ok(task)
 }
 
 pub fn complete_task(
@@ -587,7 +631,19 @@ pub fn complete_task(
         .into());
     }
     drop(conn);
-    get_task(db, task_id)
+    let task = get_task(db, task_id)?;
+    let _ = crate::db::insert_event(
+        db,
+        Some(&task.id),
+        Some(&task.project_id),
+        task.agent_id.as_deref(),
+        crate::models::EventType::TaskCompleted,
+        task.result
+            .as_ref()
+            .map(|_| serde_json::json!({"has_result": true})),
+        crate::db::now_utc_naive(),
+    );
+    Ok(task)
 }
 
 pub fn fail_task(db: &Database, task_id: &str, error: &str) -> Result<Task> {
@@ -601,7 +657,17 @@ pub fn fail_task(db: &Database, task_id: &str, error: &str) -> Result<Task> {
         .into());
     }
     drop(conn);
-    get_task(db, task_id)
+    let task = get_task(db, task_id)?;
+    let _ = crate::db::insert_event(
+        db,
+        Some(&task.id),
+        Some(&task.project_id),
+        task.agent_id.as_deref(),
+        crate::models::EventType::TaskFailed,
+        Some(serde_json::json!({"error": error})),
+        crate::db::now_utc_naive(),
+    );
+    Ok(task)
 }
 
 pub fn cancel_task(db: &Database, task_id: &str, cascade: bool) -> Result<usize> {
@@ -612,6 +678,16 @@ pub fn cancel_task(db: &Database, task_id: &str, cascade: bool) -> Result<usize>
     if cascade {
         total += conn.execute(CANCEL_DOWNSTREAM, params![task_id, now])?;
     }
+    drop(conn);
+    let _ = crate::db::insert_event(
+        db,
+        Some(task_id),
+        None,
+        None,
+        crate::models::EventType::TaskCancelled,
+        Some(serde_json::json!({"cascade": cascade, "cancelled_count": total})),
+        crate::db::now_utc_naive(),
+    );
     Ok(total)
 }
 
