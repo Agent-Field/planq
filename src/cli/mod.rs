@@ -11,7 +11,11 @@ use serde_json::{json, Value};
 use std::str::FromStr;
 
 #[derive(Parser, Debug)]
-#[command(name = "planq", version, about = "Planq task DAG CLI")]
+#[command(
+    name = "planq",
+    version,
+    about = "Task graph primitive for AI coding agents"
+)]
 pub struct Cli {
     #[arg(long, default_value_t = default_db_path(), global = true)]
     pub db: String,

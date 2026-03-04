@@ -457,7 +457,7 @@ pub fn tool_schemas() -> Vec<Value> {
         }),
         json!({
             "name": "planq_project_dag",
-            "description": "Get project DAG",
+            "description": "Get project task graph overview",
             "inputSchema": {
                 "type": "object",
                 "properties": {
