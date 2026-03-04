@@ -223,6 +223,7 @@ pub fn run(db: &Database, cli: Cli) -> Result<()> {
             Ok(())
         }
         Commands::Done(args) => {
+            let result_provided = args.result.is_some();
             let result = match args.result {
                 Some(text) => match serde_json::from_str(&text) {
                     Ok(v) => Some(v),
@@ -236,6 +237,22 @@ pub fn run(db: &Database, cli: Cli) -> Result<()> {
                 let _ = crate::db::add_task_files(db, &t.id, &paths)?;
             }
             let _ = crate::db::promote_ready_tasks(db)?;
+            if !result_provided {
+                if let Ok(deps) = crate::db::list_dependencies(db, &t.id) {
+                    let feeds_count = deps
+                        .iter()
+                        .filter(|d| {
+                            d.from_task == t.id && matches!(d.kind, DependencyKind::FeedsInto)
+                        })
+                        .count();
+                    if feeds_count > 0 {
+                        eprintln!(
+                            "hint: this task feeds into {feeds_count} downstream task(s). Consider: planq done {} --result '{{\"key\": \"value\"}}'",
+                            t.id
+                        );
+                    }
+                }
+            }
             let next = if args.next {
                 let agent = args
                     .agent
