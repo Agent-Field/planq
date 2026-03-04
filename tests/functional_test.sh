@@ -1,0 +1,577 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PLANQ="./target/debug/planq"
+DB="/tmp/planq-functional-test.db"
+PASS=0
+FAIL=0
+ERRORS=""
+
+cleanup() {
+  rm -f "$DB" "$DB-wal" "$DB-shm" /tmp/planq-batch-test.yaml /tmp/planq-replan-test.yaml
+}
+
+assert_eq() {
+  local label="$1" expected="$2" actual="$3"
+  if [ "$expected" = "$actual" ]; then
+    PASS=$((PASS + 1))
+    printf "  \033[32m✓\033[0m %s\n" "$label"
+  else
+    FAIL=$((FAIL + 1))
+    printf "  \033[31m✗\033[0m %s (expected='%s' actual='%s')\n" "$label" "$expected" "$actual"
+    ERRORS="$ERRORS\n  ✗ $label (expected='$expected' actual='$actual')"
+  fi
+}
+
+assert_contains() {
+  local label="$1" needle="$2" haystack="$3"
+  if echo "$haystack" | grep -q "$needle"; then
+    PASS=$((PASS + 1))
+    printf "  \033[32m✓\033[0m %s\n" "$label"
+  else
+    FAIL=$((FAIL + 1))
+    printf "  \033[31m✗\033[0m %s (expected to contain '%s')\n" "$label" "$needle"
+    ERRORS="$ERRORS\n  ✗ $label (expected to contain '$needle')"
+  fi
+}
+
+assert_not_empty() {
+  local label="$1" value="$2"
+  if [ -n "$value" ]; then
+    PASS=$((PASS + 1))
+    printf "  \033[32m✓\033[0m %s\n" "$label"
+  else
+    FAIL=$((FAIL + 1))
+    printf "  \033[31m✗\033[0m %s (was empty)\n" "$label"
+    ERRORS="$ERRORS\n  ✗ $label (was empty)"
+  fi
+}
+
+assert_regex() {
+  local label="$1" pattern="$2" value="$3"
+  if [[ "$value" =~ $pattern ]]; then
+    PASS=$((PASS + 1))
+    printf "  \033[32m✓\033[0m %s\n" "$label"
+  else
+    FAIL=$((FAIL + 1))
+    printf "  \033[31m✗\033[0m %s (value='%s' pattern='%s')\n" "$label" "$value" "$pattern"
+    ERRORS="$ERRORS\n  ✗ $label (value='$value' pattern='$pattern')"
+  fi
+}
+
+jq_field() {
+  echo "$1" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('$2','') if d.get('$2') is not None else '')" 2>/dev/null
+}
+
+jq_len() {
+  echo "$1" | python3 -c "import sys,json; print(len(json.load(sys.stdin)))" 2>/dev/null
+}
+
+jq_field_at() {
+  echo "$1" | python3 -c "import sys,json; arr=json.load(sys.stdin); print(arr[$2].get('$3','') if arr[$2].get('$3') is not None else '')" 2>/dev/null
+}
+
+cleanup
+
+echo ""
+echo "=========================================="
+echo "  PLANQ FUNCTIONAL TEST SUITE"
+echo "=========================================="
+echo ""
+
+# ─────────────────────────────────────────────
+echo "1. PROJECT CRUD"
+echo "─────────────────────────────────────────"
+
+# Create project
+OUT=$($PLANQ --db "$DB" --json project create "test-project" --description "A test project")
+PROJ_ID=$(jq_field "$OUT" "id")
+assert_not_empty "project create returns id" "$PROJ_ID"
+assert_regex "project id uses short format" '^p-[a-z0-9]{6}$' "$PROJ_ID"
+assert_eq "project name" "test-project" "$(jq_field "$OUT" "name")"
+assert_eq "project status" "active" "$(jq_field "$OUT" "status")"
+assert_eq "project description" "A test project" "$(jq_field "$OUT" "description")"
+
+# Create second project
+OUT2=$($PLANQ --db "$DB" --json project create "second-project")
+PROJ2_ID=$(jq_field "$OUT2" "id")
+assert_not_empty "second project create returns id" "$PROJ2_ID"
+
+# List projects
+LIST=$($PLANQ --db "$DB" --json project list)
+LIST_LEN=$(jq_len "$LIST")
+assert_eq "project list count" "2" "$LIST_LEN"
+
+# Project status (no tasks yet)
+STATUS=$($PLANQ --db "$DB" project status "$PROJ_ID")
+assert_contains "project status shows 0 tasks" "total=0" "$STATUS"
+
+# Human-readable project list (non-json)
+HR_LIST=$($PLANQ --db "$DB" project list)
+assert_contains "human-readable list shows project name" "test-project" "$HR_LIST"
+
+echo ""
+
+# ─────────────────────────────────────────────
+echo "2. TASK CREATION & BASIC LIFECYCLE"
+echo "─────────────────────────────────────────"
+
+# Create task (no deps → should auto-promote to ready)
+T_A=$($PLANQ --db "$DB" --json task create --project "$PROJ_ID" --title "Task Alpha" --kind code --priority 10 --description "First task")
+T_A_ID=$(jq_field "$T_A" "id")
+assert_not_empty "task A create returns id" "$T_A_ID"
+assert_regex "task id uses short format" '^t-[a-z0-9]{6}$' "$T_A_ID"
+assert_eq "task A kind" "code" "$(jq_field "$T_A" "kind")"
+assert_eq "task A priority" "10" "$(jq_field "$T_A" "priority")"
+
+# Verify auto-promotion to ready
+T_A_GET=$($PLANQ --db "$DB" --json task get "$T_A_ID")
+assert_eq "task A auto-promoted to ready" "ready" "$(jq_field "$T_A_GET" "status")"
+
+# Create task with dep (should stay pending)
+T_B=$($PLANQ --db "$DB" --json task create --project "$PROJ_ID" --title "Task Beta" --dep "$T_A_ID")
+T_B_ID=$(jq_field "$T_B" "id")
+T_B_GET=$($PLANQ --db "$DB" --json task get "$T_B_ID")
+assert_eq "task B stays pending (has unmet dep)" "pending" "$(jq_field "$T_B_GET" "status")"
+
+# Task list with filters
+READY_TASKS=$($PLANQ --db "$DB" --json task list --project "$PROJ_ID" --status ready)
+READY_LEN=$(jq_len "$READY_TASKS")
+assert_eq "only 1 ready task (A)" "1" "$READY_LEN"
+
+PENDING_TASKS=$($PLANQ --db "$DB" --json task list --project "$PROJ_ID" --status pending)
+PENDING_LEN=$(jq_len "$PENDING_TASKS")
+assert_eq "only 1 pending task (B)" "1" "$PENDING_LEN"
+
+# Human-readable task list
+HR_TASKS=$($PLANQ --db "$DB" task list --project "$PROJ_ID")
+assert_contains "human-readable task list shows Task Alpha" "Task Alpha" "$HR_TASKS"
+
+# Task get human readable
+HR_GET=$($PLANQ --db "$DB" task get "$T_A_ID")
+assert_contains "human-readable task get shows title" "Task Alpha" "$HR_GET"
+assert_contains "human-readable task get shows kind" "code" "$HR_GET"
+
+echo ""
+
+# ─────────────────────────────────────────────
+echo "3. CLAIM → START → HEARTBEAT → PROGRESS → DONE"
+echo "─────────────────────────────────────────"
+
+# Next task (peek, no claim)
+NEXT=$($PLANQ --db "$DB" task next --project "$PROJ_ID" --agent agent-x)
+assert_contains "next (peek) shows ready task" "Task Alpha" "$NEXT"
+
+# Next task with claim
+CLAIMED=$($PLANQ --db "$DB" --json task next --project "$PROJ_ID" --agent agent-1 --claim)
+assert_eq "claimed task is A" "$T_A_ID" "$(jq_field "$CLAIMED" "id")"
+assert_eq "claimed status" "claimed" "$(jq_field "$CLAIMED" "status")"
+assert_eq "claimed by agent-1" "agent-1" "$(jq_field "$CLAIMED" "agent_id")"
+
+# Double claim should fail (no ready tasks left)
+DOUBLE=$($PLANQ --db "$DB" task next --project "$PROJ_ID" --agent agent-2 --claim)
+assert_contains "double claim gets no task" "no ready task" "$DOUBLE"
+
+# Claim specific task that's already claimed
+CLAIM_AGAIN=$($PLANQ --db "$DB" task claim "$T_A_ID" --agent agent-2)
+assert_contains "claim already-claimed task fails" "not claimable" "$CLAIM_AGAIN"
+
+# Start
+STARTED=$($PLANQ --db "$DB" --json task start "$T_A_ID")
+assert_eq "started status" "running" "$(jq_field "$STARTED" "status")"
+
+# Heartbeat
+HB=$($PLANQ --db "$DB" --json task heartbeat "$T_A_ID")
+assert_contains "heartbeat succeeds" "1" "$(jq_field "$HB" "updated")"
+
+# Progress
+PROG=$($PLANQ --db "$DB" --json task progress "$T_A_ID" --percent 50 --note "halfway done")
+assert_contains "progress update succeeds" "1" "$(jq_field "$PROG" "updated")"
+
+# Verify progress on task
+T_A_MID=$($PLANQ --db "$DB" --json task get "$T_A_ID")
+assert_eq "progress at 50" "50" "$(jq_field "$T_A_MID" "progress")"
+assert_eq "progress note" "halfway done" "$(jq_field "$T_A_MID" "progress_note")"
+
+# Done
+DONE=$($PLANQ --db "$DB" --json task done "$T_A_ID" --result '{"output": "success"}')
+assert_eq "done status" "done" "$(jq_field "$DONE" "status")"
+assert_not_empty "done has completed_at" "$(jq_field "$DONE" "completed_at")"
+
+echo ""
+
+# ─────────────────────────────────────────────
+echo "4. DEPENDENCY AUTO-PROMOTION"
+echo "─────────────────────────────────────────"
+
+# Task B should now be ready
+T_B_AFTER=$($PLANQ --db "$DB" --json task get "$T_B_ID")
+assert_eq "task B promoted to ready after A done" "ready" "$(jq_field "$T_B_AFTER" "status")"
+
+# Complete B for clean state
+$PLANQ --db "$DB" --json task next --project "$PROJ_ID" --agent agent-1 --claim >/dev/null
+$PLANQ --db "$DB" --json task start "$T_B_ID" >/dev/null
+$PLANQ --db "$DB" --json task done "$T_B_ID" >/dev/null
+
+# Project status should show all done
+STATUS_AFTER=$($PLANQ --db "$DB" project status "$PROJ_ID")
+assert_contains "project status shows done=2" "done=2" "$STATUS_AFTER"
+
+echo ""
+
+# ─────────────────────────────────────────────
+echo "5. FAIL & RETRY"
+echo "─────────────────────────────────────────"
+
+# Create task with retries
+T_R=$($PLANQ --db "$DB" --json task create --project "$PROJ_ID" --title "Retry Task" --max-retries 2)
+T_R_ID=$(jq_field "$T_R" "id")
+T_R_GET=$($PLANQ --db "$DB" --json task get "$T_R_ID")
+assert_eq "retry task ready" "ready" "$(jq_field "$T_R_GET" "status")"
+
+# Claim, start, fail
+$PLANQ --db "$DB" --json task claim "$T_R_ID" --agent agent-1 >/dev/null
+$PLANQ --db "$DB" --json task start "$T_R_ID" >/dev/null
+FAILED=$($PLANQ --db "$DB" --json task fail "$T_R_ID" --error "network timeout")
+assert_eq "task failed" "failed" "$(jq_field "$FAILED" "status")"
+assert_eq "retry count is 1" "1" "$(jq_field "$FAILED" "retry_count")"
+assert_eq "error message" "network timeout" "$(jq_field "$FAILED" "error")"
+
+echo ""
+
+# ─────────────────────────────────────────────
+echo "6. CANCEL WITH CASCADE"
+echo "─────────────────────────────────────────"
+
+# Create parent → child chain
+T_P=$($PLANQ --db "$DB" --json task create --project "$PROJ_ID" --title "Parent Task")
+T_P_ID=$(jq_field "$T_P" "id")
+T_C1=$($PLANQ --db "$DB" --json task create --project "$PROJ_ID" --title "Child 1" --dep "$T_P_ID:feeds_into")
+T_C1_ID=$(jq_field "$T_C1" "id")
+T_C2=$($PLANQ --db "$DB" --json task create --project "$PROJ_ID" --title "Child 2" --dep "$T_P_ID:feeds_into")
+T_C2_ID=$(jq_field "$T_C2" "id")
+
+# Cancel parent with cascade
+CANCEL=$($PLANQ --db "$DB" --json task cancel "$T_P_ID" --cascade)
+CANCEL_COUNT=$(jq_field "$CANCEL" "cancelled")
+assert_eq "cascade cancelled 3 tasks" "3" "$CANCEL_COUNT"
+
+# Verify all cancelled
+T_P_CHECK=$($PLANQ --db "$DB" --json task get "$T_P_ID")
+T_C1_CHECK=$($PLANQ --db "$DB" --json task get "$T_C1_ID")
+T_C2_CHECK=$($PLANQ --db "$DB" --json task get "$T_C2_ID")
+assert_eq "parent cancelled" "cancelled" "$(jq_field "$T_P_CHECK" "status")"
+assert_eq "child 1 cancelled" "cancelled" "$(jq_field "$T_C1_CHECK" "status")"
+assert_eq "child 2 cancelled" "cancelled" "$(jq_field "$T_C2_CHECK" "status")"
+
+# Cancel without cascade (just the one task)
+T_SOLO=$($PLANQ --db "$DB" --json task create --project "$PROJ_ID" --title "Solo Cancel")
+T_SOLO_ID=$(jq_field "$T_SOLO" "id")
+CANCEL_SOLO=$($PLANQ --db "$DB" --json task cancel "$T_SOLO_ID")
+assert_eq "solo cancel cancels 1" "1" "$(jq_field "$CANCEL_SOLO" "cancelled")"
+
+echo ""
+
+# ─────────────────────────────────────────────
+echo "7. BATCH YAML IMPORT"
+echo "─────────────────────────────────────────"
+
+cat > /tmp/planq-batch-test.yaml << 'YAML'
+tasks:
+  - id: batch-design
+    title: "Design the API"
+    kind: code
+    tags:
+      - backend
+      - api
+  - id: batch-impl
+    title: "Implement the API"
+    kind: code
+    deps:
+      - from: batch-design
+        kind: feeds_into
+  - id: batch-test
+    title: "Write tests"
+    kind: test
+    deps:
+      - from: batch-impl
+        kind: feeds_into
+YAML
+
+BATCH=$($PLANQ --db "$DB" --json task create-batch --project "$PROJ_ID" --file /tmp/planq-batch-test.yaml)
+INSERTED=$(jq_field "$BATCH" "inserted")
+assert_eq "batch inserted 3 tasks" "3" "$INSERTED"
+
+# Verify DAG structure: design=ready, impl=pending, test=pending
+DESIGN=$($PLANQ --db "$DB" --json task get "batch-design")
+IMPL=$($PLANQ --db "$DB" --json task get "batch-impl")
+TEST=$($PLANQ --db "$DB" --json task get "batch-test")
+assert_eq "batch design is ready" "ready" "$(jq_field "$DESIGN" "status")"
+assert_eq "batch impl is pending" "pending" "$(jq_field "$IMPL" "status")"
+assert_eq "batch test is pending" "pending" "$(jq_field "$TEST" "status")"
+
+# Complete design → impl should promote
+$PLANQ --db "$DB" --json task claim "batch-design" --agent agent-1 >/dev/null
+$PLANQ --db "$DB" --json task start "batch-design" >/dev/null
+$PLANQ --db "$DB" --json task done "batch-design" >/dev/null
+
+IMPL_AFTER=$($PLANQ --db "$DB" --json task get "batch-impl")
+TEST_AFTER=$($PLANQ --db "$DB" --json task get "batch-test")
+assert_eq "batch impl promoted to ready" "ready" "$(jq_field "$IMPL_AFTER" "status")"
+assert_eq "batch test still pending" "pending" "$(jq_field "$TEST_AFTER" "status")"
+
+# Complete impl → test should promote
+$PLANQ --db "$DB" --json task claim "batch-impl" --agent agent-2 >/dev/null
+$PLANQ --db "$DB" --json task start "batch-impl" >/dev/null
+$PLANQ --db "$DB" --json task done "batch-impl" >/dev/null
+
+TEST_FINAL=$($PLANQ --db "$DB" --json task get "batch-test")
+assert_eq "batch test promoted to ready" "ready" "$(jq_field "$TEST_FINAL" "status")"
+
+echo ""
+
+# ─────────────────────────────────────────────
+echo "8. ARTIFACTS"
+echo "─────────────────────────────────────────"
+
+# Write artifact on a completed task
+ART=$($PLANQ --db "$DB" --json artifact write --task "$T_A_ID" --name "output.json" --content '{"result": 42}' --kind output --mime "application/json")
+ART_ID=$(jq_field "$ART" "id")
+assert_not_empty "artifact write returns id" "$ART_ID"
+assert_regex "artifact id uses short format" '^a-[a-z0-9]{6}$' "$ART_ID"
+assert_eq "artifact name" "output.json" "$(jq_field "$ART" "name")"
+assert_eq "artifact kind" "output" "$(jq_field "$ART" "kind")"
+
+# Write second artifact
+ART2=$($PLANQ --db "$DB" --json artifact write --task "$T_A_ID" --name "log.txt" --content "some log" --kind log)
+ART2_ID=$(jq_field "$ART2" "id")
+
+# List artifacts for task
+ART_LIST=$($PLANQ --db "$DB" --json artifact list --task "$T_A_ID")
+ART_LIST_LEN=$(jq_len "$ART_LIST")
+assert_eq "2 artifacts on task A" "2" "$ART_LIST_LEN"
+
+# Read artifact by name
+ART_READ=$($PLANQ --db "$DB" --json artifact read --task "$T_A_ID" --name "output.json")
+assert_eq "artifact read name" "output.json" "$(jq_field "$ART_READ" "name")"
+assert_contains "artifact read content" "42" "$(jq_field "$ART_READ" "content")"
+
+echo ""
+
+# ─────────────────────────────────────────────
+echo "9. EVENTS"
+echo "─────────────────────────────────────────"
+
+EVENTS=$($PLANQ --db "$DB" --json events list --project "$PROJ_ID")
+EVENTS_LEN=$(jq_len "$EVENTS")
+# CLI operations don't emit events (only HTTP/MCP routes do), so list may be empty
+assert_eq "events list returns array" "0" "$(echo "$EVENTS" | python3 -c "import sys,json;d=json.load(sys.stdin);print('0' if isinstance(d,list) else '1')")"
+
+# Human-readable events (empty is OK for CLI-only operations)
+HR_EVENTS=$($PLANQ --db "$DB" events list --project "$PROJ_ID")
+assert_contains "events list command runs without error" "no rows" "$HR_EVENTS"
+
+echo ""
+
+# ─────────────────────────────────────────────
+echo "10. DAG VISUALIZATION"
+echo "─────────────────────────────────────────"
+
+DAG=$($PLANQ --db "$DB" project dag "$PROJ_ID")
+assert_contains "DAG shows Task Alpha title" "Task Alpha" "$DAG"
+assert_contains "DAG shows feeds_into edges" "feeds_into" "$DAG"
+
+# JSON dag
+DAG_JSON=$($PLANQ --db "$DB" --json project dag "$PROJ_ID")
+assert_contains "JSON DAG has tasks" "tasks" "$DAG_JSON"
+assert_contains "JSON DAG has edges" "edges" "$DAG_JSON"
+
+echo ""
+
+# ─────────────────────────────────────────────
+echo "11. PARENT-CHILD HIERARCHY"
+echo "─────────────────────────────────────────"
+
+T_PARENT=$($PLANQ --db "$DB" --json task create --project "$PROJ_ID" --title "Epic Task")
+T_PARENT_ID=$(jq_field "$T_PARENT" "id")
+
+T_SUB1=$($PLANQ --db "$DB" --json task create --project "$PROJ_ID" --title "Subtask 1" --parent "$T_PARENT_ID")
+T_SUB1_ID=$(jq_field "$T_SUB1" "id")
+assert_eq "subtask parent_task_id set" "$T_PARENT_ID" "$(jq_field "$T_SUB1" "parent_task_id")"
+
+T_SUB2=$($PLANQ --db "$DB" --json task create --project "$PROJ_ID" --title "Subtask 2" --parent "$T_PARENT_ID")
+T_SUB2_ID=$(jq_field "$T_SUB2" "id")
+
+echo ""
+
+# ─────────────────────────────────────────────
+echo "12. TASK KIND FILTERING"
+echo "─────────────────────────────────────────"
+
+# Create tasks of different kinds
+$PLANQ --db "$DB" --json task create --project "$PROJ2_ID" --title "Code task" --kind code >/dev/null
+$PLANQ --db "$DB" --json task create --project "$PROJ2_ID" --title "Test task" --kind test >/dev/null
+$PLANQ --db "$DB" --json task create --project "$PROJ2_ID" --title "Review task" --kind review >/dev/null
+
+CODE_TASKS=$($PLANQ --db "$DB" --json task list --project "$PROJ2_ID" --kind code)
+CODE_LEN=$(jq_len "$CODE_TASKS")
+assert_eq "filter by kind=code returns 1" "1" "$CODE_LEN"
+
+TEST_TASKS=$($PLANQ --db "$DB" --json task list --project "$PROJ2_ID" --kind test)
+TEST_LEN=$(jq_len "$TEST_TASKS")
+assert_eq "filter by kind=test returns 1" "1" "$TEST_LEN"
+
+ALL_TASKS=$($PLANQ --db "$DB" --json task list --project "$PROJ2_ID")
+ALL_LEN=$(jq_len "$ALL_TASKS")
+assert_eq "all tasks in proj2 = 3" "3" "$ALL_LEN"
+
+echo ""
+
+# ─────────────────────────────────────────────
+echo "13. APPROVAL WORKFLOW"
+echo "─────────────────────────────────────────"
+
+T_APR=$($PLANQ --db "$DB" --json task create --project "$PROJ_ID" --title "Needs Approval" --requires-approval)
+T_APR_ID=$(jq_field "$T_APR" "id")
+T_APR_GET=$($PLANQ --db "$DB" --json task get "$T_APR_ID")
+assert_eq "requires_approval is true" "True" "$(echo "$T_APR_GET" | python3 -c "import sys,json;print(json.load(sys.stdin)['requires_approval'])")"
+
+# Approve it
+APR_RESULT=$($PLANQ --db "$DB" --json task approve "$T_APR_ID" --by "reviewer-1" --comment "looks good")
+assert_contains "approve returns updated" "1" "$(jq_field "$APR_RESULT" "updated")"
+
+# Verify approval fields
+T_APR_AFTER=$($PLANQ --db "$DB" --json task get "$T_APR_ID")
+assert_eq "approval_status set" "approved" "$(jq_field "$T_APR_AFTER" "approval_status")"
+assert_eq "approved_by set" "reviewer-1" "$(jq_field "$T_APR_AFTER" "approved_by")"
+
+echo ""
+
+# ─────────────────────────────────────────────
+echo "14. EDGE CASES"
+echo "─────────────────────────────────────────"
+
+# Invalid progress (out of range)
+BAD_PROG=$($PLANQ --db "$DB" task progress "$T_APR_ID" --percent 150 2>&1 || true)
+assert_contains "invalid progress rejected" "must be between" "$BAD_PROG"
+
+# Get non-existent task
+BAD_GET=$($PLANQ --db "$DB" --json task get "t-zzzzzz" 2>&1 || true)
+assert_contains "non-existent task errors" "error" "$BAD_GET"
+
+# Double complete (already done task)
+BAD_DONE=$($PLANQ --db "$DB" task done "$T_A_ID" 2>&1 || true)
+# Should error since task A is already done
+assert_contains "double-done errors" "error" "$BAD_DONE"
+
+echo ""
+
+# ─────────────────────────────────────────────
+echo "15. STICKY PROJECT + STATUS"
+echo "─────────────────────────────────────────"
+
+USE_SHOW=$($PLANQ --db "$DB" use)
+assert_eq "use shows current project" "$PROJ2_ID" "$USE_SHOW"
+
+$PLANQ --db "$DB" use "$PROJ_ID" >/dev/null
+USE_SHOW2=$($PLANQ --db "$DB" use)
+assert_eq "use sets explicit default" "$PROJ_ID" "$USE_SHOW2"
+
+STATUS_LINE=$($PLANQ --db "$DB" status)
+assert_contains "status summary includes project id" "$PROJ_ID" "$STATUS_LINE"
+assert_contains "status summary includes done ratio" "done" "$STATUS_LINE"
+
+STATUS_DETAIL=$($PLANQ --db "$DB" status --detail)
+assert_contains "status detail includes task rows" "Task Alpha" "$STATUS_DETAIL"
+
+echo ""
+
+# ─────────────────────────────────────────────
+echo "16. GO + NOTES + DONE FILES"
+echo "─────────────────────────────────────────"
+
+GO_PROJECT=$($PLANQ --db "$DB" --json project create "go-project")
+GO_PROJECT_ID=$(jq_field "$GO_PROJECT" "id")
+
+GO_TASK=$($PLANQ --db "$DB" --json task create --project "$GO_PROJECT_ID" --title "Go Candidate")
+GO_TASK_ID=$(jq_field "$GO_TASK" "id")
+
+GO_OUT=$($PLANQ --db "$DB" --json task go --agent test-agent --project "$GO_PROJECT_ID")
+GO_ID=$(echo "$GO_OUT" | python3 -c "import sys,json; d=json.load(sys.stdin); t=d.get('task'); print('' if t is None else t.get('id',''))")
+assert_eq "task go starts expected task" "$GO_TASK_ID" "$GO_ID"
+assert_contains "task go reports running" "running" "$GO_OUT"
+
+NOTE_OUT=$($PLANQ --db "$DB" --json task note "$GO_TASK_ID" "test note" --agent test-agent)
+assert_eq "task note content saved" "test note" "$(jq_field "$NOTE_OUT" "content")"
+
+NOTES_OUT=$($PLANQ --db "$DB" --json task notes "$GO_TASK_ID")
+NOTES_LEN=$(jq_len "$NOTES_OUT")
+assert_eq "task notes returns one note" "1" "$NOTES_LEN"
+
+DONE_NEXT=$($PLANQ --db "$DB" --json task done "$GO_TASK_ID" --result "done" --files src/main.rs,src/lib.rs)
+assert_eq "done marks task complete" "done" "$(jq_field "$DONE_NEXT" "status")"
+
+echo ""
+
+# ─────────────────────────────────────────────
+echo "17. PAUSE + REPLAN"
+echo "─────────────────────────────────────────"
+
+PAUSE_TASK=$($PLANQ --db "$DB" --json task create --project "$PROJ_ID" --title "Pause Task")
+PAUSE_TASK_ID=$(jq_field "$PAUSE_TASK" "id")
+$PLANQ --db "$DB" --json task claim "$PAUSE_TASK_ID" --agent pauser >/dev/null
+$PLANQ --db "$DB" --json task start "$PAUSE_TASK_ID" >/dev/null
+PAUSE_OUT=$($PLANQ --db "$DB" --json task pause "$PAUSE_TASK_ID" --progress 60 --note "handoff")
+assert_eq "pause returns task to ready" "ready" "$(jq_field "$PAUSE_OUT" "status")"
+assert_contains "pause metadata keeps previous agent" "pauser" "$PAUSE_OUT"
+
+REPLAN_PARENT=$($PLANQ --db "$DB" --json task create --project "$PROJ_ID" --title "Replan Parent")
+REPLAN_PARENT_ID=$(jq_field "$REPLAN_PARENT" "id")
+cat > /tmp/planq-replan-test.yaml << 'YAML'
+subtasks:
+  - title: "New Subtask A"
+  - title: "New Subtask B"
+    deps_on:
+      - "New Subtask A"
+YAML
+
+REPLAN_OUT=$($PLANQ --db "$DB" --json task replan "$REPLAN_PARENT_ID" --file /tmp/planq-replan-test.yaml)
+assert_eq "replan created two subtasks" "2" "$(jq_field "$REPLAN_OUT" "subtasks_created")"
+
+echo ""
+
+# ─────────────────────────────────────────────
+echo "18. VERSION & HELP"
+echo "─────────────────────────────────────────"
+
+VERSION=$($PLANQ --version)
+assert_contains "version shows planq" "planq" "$VERSION"
+
+HELP=$($PLANQ --help)
+assert_contains "help shows project" "project" "$HELP"
+assert_contains "help shows task" "task" "$HELP"
+assert_contains "help shows mcp" "mcp" "$HELP"
+assert_contains "help shows serve" "serve" "$HELP"
+
+echo ""
+
+# ─────────────────────────────────────────────
+# SUMMARY
+echo "=========================================="
+echo "  RESULTS"
+echo "=========================================="
+echo ""
+printf "  \033[32m%d passed\033[0m, \033[31m%d failed\033[0m\n" "$PASS" "$FAIL"
+echo ""
+
+if [ "$FAIL" -gt 0 ]; then
+  echo "  FAILURES:"
+  printf "$ERRORS\n"
+  echo ""
+fi
+
+cleanup
+
+if [ "$FAIL" -gt 0 ]; then
+  exit 1
+fi

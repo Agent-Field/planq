@@ -1,0 +1,777 @@
+use crate::db::{
+    dt_to_sql, json_to_sql, now_utc_naive, parse_dt, parse_json, Database, PlanqError,
+};
+use crate::models::{Task, TaskKind, TaskStatus};
+use anyhow::Result;
+use rusqlite::{params, OptionalExtension};
+use serde_json::{Map, Value};
+
+const TASK_COLUMNS: &str = r#"
+id, project_id, parent_task_id, is_composite,
+title, description, status, kind, priority,
+agent_id, claimed_at, started_at, completed_at,
+result, error, progress, progress_note,
+max_retries, retry_count, retry_backoff, retry_delay_ms,
+timeout_seconds, heartbeat_interval, last_heartbeat,
+requires_approval, approval_status, approved_by, approval_comment,
+metadata, created_at, updated_at
+"#;
+
+const INSERT_TASK: &str = r#"
+INSERT INTO tasks (
+  id, project_id, parent_task_id, is_composite,
+  title, description, status, kind, priority,
+  agent_id, claimed_at, started_at, completed_at,
+  result, error, progress, progress_note,
+  max_retries, retry_count, retry_backoff, retry_delay_ms,
+  timeout_seconds, heartbeat_interval, last_heartbeat,
+  requires_approval, approval_status, approved_by, approval_comment,
+  metadata, created_at, updated_at
+) VALUES (
+  ?1, ?2, ?3, ?4,
+  ?5, ?6, ?7, ?8, ?9,
+  ?10, ?11, ?12, ?13,
+  ?14, ?15, ?16, ?17,
+  ?18, ?19, ?20, ?21,
+  ?22, ?23, ?24,
+  ?25, ?26, ?27, ?28,
+  ?29, ?30, ?31
+);
+"#;
+
+const INSERT_TASK_TAG: &str = "INSERT OR IGNORE INTO task_tags(task_id, tag) VALUES (?1, ?2);";
+
+const SELECT_TASK_BY_ID: &str = r#"
+SELECT
+id, project_id, parent_task_id, is_composite,
+title, description, status, kind, priority,
+agent_id, claimed_at, started_at, completed_at,
+result, error, progress, progress_note,
+max_retries, retry_count, retry_backoff, retry_delay_ms,
+timeout_seconds, heartbeat_interval, last_heartbeat,
+requires_approval, approval_status, approved_by, approval_comment,
+metadata, created_at, updated_at
+FROM tasks
+WHERE id = ?1;
+"#;
+
+const SELECT_TASKS_FILTERED: &str = r#"
+SELECT
+t.id, t.project_id, t.parent_task_id, t.is_composite,
+t.title, t.description, t.status, t.kind, t.priority,
+t.agent_id, t.claimed_at, t.started_at, t.completed_at,
+t.result, t.error, t.progress, t.progress_note,
+t.max_retries, t.retry_count, t.retry_backoff, t.retry_delay_ms,
+t.timeout_seconds, t.heartbeat_interval, t.last_heartbeat,
+t.requires_approval, t.approval_status, t.approved_by, t.approval_comment,
+t.metadata, t.created_at, t.updated_at
+FROM tasks t
+WHERE (?1 IS NULL OR t.project_id = ?1)
+  AND (?2 IS NULL OR t.status = ?2)
+  AND (?3 IS NULL OR t.kind = ?3)
+  AND (?4 IS NULL OR t.parent_task_id = ?4)
+  AND (?5 IS NULL OR t.agent_id = ?5)
+  AND (
+      ?6 IS NULL OR EXISTS (
+        SELECT 1 FROM task_tags tt
+        WHERE tt.task_id = t.id
+          AND tt.tag IN (SELECT value FROM json_each(?6))
+      )
+  )
+ORDER BY t.priority DESC, t.created_at ASC;
+"#;
+
+const CLAIM_TASK: &str = r#"
+UPDATE tasks
+SET status = 'claimed', agent_id = ?1, claimed_at = ?2, last_heartbeat = ?2, updated_at = ?2
+WHERE id = ?3 AND status = 'ready'
+RETURNING
+id, project_id, parent_task_id, is_composite,
+title, description, status, kind, priority,
+agent_id, claimed_at, started_at, completed_at,
+result, error, progress, progress_note,
+max_retries, retry_count, retry_backoff, retry_delay_ms,
+timeout_seconds, heartbeat_interval, last_heartbeat,
+requires_approval, approval_status, approved_by, approval_comment,
+metadata, created_at, updated_at;
+"#;
+
+const CLAIM_NEXT_TASK: &str = r#"
+UPDATE tasks
+SET status = 'claimed', agent_id = ?1, claimed_at = ?3, last_heartbeat = ?3, updated_at = ?3
+WHERE id = (
+  SELECT id
+  FROM tasks
+  WHERE project_id = ?2 AND status = 'ready'
+  ORDER BY priority DESC, created_at ASC
+  LIMIT 1
+)
+RETURNING
+id, project_id, parent_task_id, is_composite,
+title, description, status, kind, priority,
+agent_id, claimed_at, started_at, completed_at,
+result, error, progress, progress_note,
+max_retries, retry_count, retry_backoff, retry_delay_ms,
+timeout_seconds, heartbeat_interval, last_heartbeat,
+requires_approval, approval_status, approved_by, approval_comment,
+metadata, created_at, updated_at;
+"#;
+
+const START_TASK: &str = r#"
+UPDATE tasks
+SET status = 'running', started_at = ?2, last_heartbeat = ?2, updated_at = ?2
+WHERE id = ?1 AND status = 'claimed';
+"#;
+
+const COMPLETE_TASK: &str = r#"
+UPDATE tasks
+SET status = 'done', result = ?2, error = NULL, completed_at = ?3, updated_at = ?3
+WHERE id = ?1 AND status = 'running';
+"#;
+
+const FAIL_TASK: &str = r#"
+UPDATE tasks
+SET status = 'failed', error = ?2, retry_count = retry_count + 1, completed_at = ?3, updated_at = ?3
+WHERE id = ?1 AND status = 'running';
+"#;
+
+const CANCEL_TASK: &str = r#"
+UPDATE tasks
+SET status = 'cancelled', updated_at = ?2
+WHERE id = ?1 AND status NOT IN ('done', 'done_partial');
+"#;
+
+const CANCEL_DOWNSTREAM: &str = r#"
+WITH RECURSIVE downstream(task_id) AS (
+  SELECT to_task FROM dependencies WHERE from_task = ?1
+  UNION ALL
+  SELECT d.to_task FROM dependencies d
+  JOIN downstream ds ON d.from_task = ds.task_id
+)
+UPDATE tasks
+SET status = 'cancelled', updated_at = ?2
+WHERE id IN (SELECT task_id FROM downstream)
+  AND status NOT IN ('done', 'done_partial');
+"#;
+
+const UPDATE_HEARTBEAT: &str = r#"
+UPDATE tasks
+SET last_heartbeat = ?2, updated_at = ?2
+WHERE id = ?1 AND status IN ('claimed', 'running');
+"#;
+
+const UPDATE_PROGRESS: &str = r#"
+UPDATE tasks
+SET progress = ?2, progress_note = ?3, updated_at = ?4
+WHERE id = ?1;
+"#;
+
+const APPROVE_TASK: &str = r#"
+UPDATE tasks
+SET approval_status = ?2, approved_by = ?3, approval_comment = ?4, updated_at = ?5
+WHERE id = ?1;
+"#;
+
+const PROMOTE_READY: &str = r#"
+UPDATE tasks SET status = 'ready', updated_at = ?1
+WHERE id IN (SELECT id FROM task_readiness WHERE promotable = 1);
+"#;
+
+const PAUSE_TASK: &str = r#"
+UPDATE tasks
+SET status = 'ready',
+    agent_id = NULL,
+    progress = ?2,
+    progress_note = ?3,
+    metadata = ?4,
+    updated_at = ?5
+WHERE id = ?1
+  AND status IN ('running', 'claimed');
+"#;
+
+const SELECT_HANDOFF_CONTEXT: &str = r#"
+SELECT t.id, t.title, t.result, t.agent_id
+FROM dependencies d
+JOIN tasks t ON t.id = d.from_task
+WHERE d.to_task = ?1
+  AND t.status IN ('done', 'done_partial')
+  AND t.result IS NOT NULL
+ORDER BY t.completed_at ASC, t.created_at ASC;
+"#;
+
+const COUNT_TASKS_BY_STATUS: &str = "SELECT COUNT(1) FROM tasks WHERE status = ?1;";
+const SELECT_TASK_TITLES_LIKE: &str = r#"
+SELECT id, title
+FROM tasks
+WHERE title LIKE ?1
+  AND (?2 IS NULL OR project_id = ?2)
+ORDER BY created_at DESC
+LIMIT 5;
+"#;
+const SELECT_RECENT_TASK_IDS: &str = r#"
+SELECT id, title
+FROM tasks
+WHERE (?1 IS NULL OR project_id = ?1)
+ORDER BY created_at DESC
+LIMIT 50;
+"#;
+
+fn levenshtein(a: &str, b: &str) -> usize {
+    let n = b.chars().count();
+    let mut prev: Vec<usize> = (0..=n).collect();
+    let mut curr = vec![0usize; n + 1];
+    for (i, ca) in a.chars().enumerate() {
+        curr[0] = i + 1;
+        for (j, cb) in b.chars().enumerate() {
+            curr[j + 1] = if ca == cb {
+                prev[j]
+            } else {
+                1 + prev[j].min(prev[j + 1]).min(curr[j])
+            };
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+    prev[n]
+}
+
+#[derive(Default, Clone, Debug)]
+pub struct TaskListFilters {
+    pub project_id: Option<String>,
+    pub status: Option<TaskStatus>,
+    pub kind: Option<TaskKind>,
+    pub parent_task_id: Option<String>,
+    pub agent_id: Option<String>,
+    pub tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct HandoffEntry {
+    pub from_task_id: String,
+    pub from_title: String,
+    pub result: Option<Value>,
+    pub agent_id: Option<String>,
+}
+
+pub(crate) fn row_to_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
+    let conv = |idx: usize, e: anyhow::Error| {
+        rusqlite::Error::FromSqlConversionFailure(
+            idx,
+            rusqlite::types::Type::Text,
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                e.to_string(),
+            )),
+        )
+    };
+    let claimed_at: Option<String> = row.get(10)?;
+    let started_at: Option<String> = row.get(11)?;
+    let completed_at: Option<String> = row.get(12)?;
+    let result: Option<String> = row.get(13)?;
+    let last_heartbeat: Option<String> = row.get(23)?;
+    let metadata: Option<String> = row.get(28)?;
+    Ok(Task {
+        id: row.get(0)?,
+        project_id: row.get(1)?,
+        parent_task_id: row.get(2)?,
+        is_composite: row.get(3)?,
+        title: row.get(4)?,
+        description: row.get(5)?,
+        status: row.get(6)?,
+        kind: row.get(7)?,
+        priority: row.get(8)?,
+        agent_id: row.get(9)?,
+        claimed_at: claimed_at
+            .map(parse_dt)
+            .transpose()
+            .map_err(|e| conv(10, e))?,
+        started_at: started_at
+            .map(parse_dt)
+            .transpose()
+            .map_err(|e| conv(11, e))?,
+        completed_at: completed_at
+            .map(parse_dt)
+            .transpose()
+            .map_err(|e| conv(12, e))?,
+        result: parse_json(result).map_err(|e| conv(13, e))?,
+        error: row.get(14)?,
+        progress: row.get(15)?,
+        progress_note: row.get(16)?,
+        max_retries: row.get(17)?,
+        retry_count: row.get(18)?,
+        retry_backoff: row.get(19)?,
+        retry_delay_ms: row.get(20)?,
+        timeout_seconds: row.get(21)?,
+        heartbeat_interval: row.get(22)?,
+        last_heartbeat: last_heartbeat
+            .map(parse_dt)
+            .transpose()
+            .map_err(|e| conv(23, e))?,
+        requires_approval: row.get(24)?,
+        approval_status: row.get(25)?,
+        approved_by: row.get(26)?,
+        approval_comment: row.get(27)?,
+        metadata: parse_json(metadata).map_err(|e| conv(28, e))?,
+        created_at: parse_dt(row.get::<_, String>(29)?).map_err(|e| conv(29, e))?,
+        updated_at: parse_dt(row.get::<_, String>(30)?).map_err(|e| conv(30, e))?,
+    })
+}
+
+pub fn create_task(db: &Database, task: &Task, tags: &[String]) -> Result<Task> {
+    let conn = db.lock()?;
+    let mut task_with_defaults = task.clone();
+    if task_with_defaults.max_retries < 0 {
+        task_with_defaults.max_retries = 0;
+    }
+    if task_with_defaults.retry_count < 0 {
+        task_with_defaults.retry_count = 0;
+    }
+    if task_with_defaults.retry_delay_ms <= 0 {
+        task_with_defaults.retry_delay_ms = 1000;
+    }
+    if task_with_defaults.heartbeat_interval <= 0 {
+        task_with_defaults.heartbeat_interval = 30;
+    }
+    let task_id = task_with_defaults.id.clone();
+    let result = json_to_sql(&task_with_defaults.result)?;
+    let metadata = json_to_sql(&task_with_defaults.metadata)?;
+    conn.execute(
+        INSERT_TASK,
+        params![
+            &task_with_defaults.id,
+            &task_with_defaults.project_id,
+            &task_with_defaults.parent_task_id,
+            task_with_defaults.is_composite,
+            &task_with_defaults.title,
+            &task_with_defaults.description,
+            &task_with_defaults.status,
+            &task_with_defaults.kind,
+            task_with_defaults.priority,
+            &task_with_defaults.agent_id,
+            task_with_defaults.claimed_at.map(dt_to_sql),
+            task_with_defaults.started_at.map(dt_to_sql),
+            task_with_defaults.completed_at.map(dt_to_sql),
+            &result,
+            &task_with_defaults.error,
+            task_with_defaults.progress,
+            &task_with_defaults.progress_note,
+            task_with_defaults.max_retries,
+            task_with_defaults.retry_count,
+            &task_with_defaults.retry_backoff,
+            task_with_defaults.retry_delay_ms,
+            task_with_defaults.timeout_seconds,
+            task_with_defaults.heartbeat_interval,
+            task_with_defaults.last_heartbeat.map(dt_to_sql),
+            task_with_defaults.requires_approval,
+            &task_with_defaults.approval_status,
+            &task_with_defaults.approved_by,
+            &task_with_defaults.approval_comment,
+            &metadata,
+            dt_to_sql(task_with_defaults.created_at),
+            dt_to_sql(task_with_defaults.updated_at)
+        ],
+    )?;
+    for tag in tags {
+        conn.execute(INSERT_TASK_TAG, params![&task_id, tag])?;
+    }
+    drop(conn);
+    get_task(db, &task_id)
+}
+
+pub fn get_task(db: &Database, task_id: &str) -> Result<Task> {
+    let conn = db.lock()?;
+    let mut stmt = conn.prepare(SELECT_TASK_BY_ID)?;
+    let task = stmt.query_row(params![task_id], row_to_task).optional()?;
+    task.ok_or_else(|| PlanqError::NotFound(format!("task {task_id}")).into())
+}
+
+pub fn fuzzy_find_task(db: &Database, input: &str, project_id: Option<&str>) -> Result<Task> {
+    match get_task(db, input) {
+        Ok(task) => return Ok(task),
+        Err(err) => {
+            if !matches!(
+                err.downcast_ref::<PlanqError>(),
+                Some(PlanqError::NotFound(_))
+            ) {
+                return Err(err);
+            }
+        }
+    }
+
+    if !input.starts_with("t-") {
+        let matches: Vec<(String, String)> = {
+            let conn = db.lock()?;
+            let like = format!("%{input}%");
+            let mut stmt = conn.prepare(SELECT_TASK_TITLES_LIKE)?;
+            let mut rows = stmt.query(params![like, project_id])?;
+            let mut matches: Vec<(String, String)> = Vec::new();
+            while let Some(row) = rows.next()? {
+                matches.push((row.get(0)?, row.get(1)?));
+            }
+            matches
+        };
+
+        if matches.len() == 1 {
+            return get_task(db, &matches[0].0);
+        }
+        if !matches.is_empty() {
+            let rendered = matches
+                .iter()
+                .map(|(id, title)| format!("{id} ({title})"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(anyhow::anyhow!(
+                "Multiple matches for '{input}': {rendered}"
+            ));
+        }
+    }
+
+    if input.starts_with("t-") {
+        let conn = db.lock()?;
+        let mut stmt = conn.prepare(SELECT_RECENT_TASK_IDS)?;
+        let mut rows = stmt.query(params![project_id])?;
+        let mut best: Option<(usize, String, String)> = None;
+        while let Some(row) = rows.next()? {
+            let id: String = row.get(0)?;
+            let title: String = row.get(1)?;
+            let dist = levenshtein(input, &id);
+            if best.as_ref().map(|(d, _, _)| dist < *d).unwrap_or(true) {
+                best = Some((dist, id, title));
+            }
+        }
+        if let Some((dist, id, title)) = best {
+            if dist <= 2 {
+                return Err(anyhow::anyhow!(
+                    "Task '{input}' not found. Did you mean: {id} ({title})?"
+                ));
+            }
+        }
+    }
+
+    Err(PlanqError::NotFound(format!("task {input}")).into())
+}
+
+pub fn list_tasks(db: &Database, filters: TaskListFilters) -> Result<Vec<Task>> {
+    let conn = db.lock()?;
+    let mut stmt = conn.prepare(SELECT_TASKS_FILTERED)?;
+    let tag_json = if filters.tags.is_empty() {
+        None
+    } else {
+        Some(serde_json::to_string(&filters.tags)?)
+    };
+    let mut rows = stmt.query(params![
+        filters.project_id,
+        filters.status.map(|s| s.to_string()),
+        filters.kind.map(|k| k.to_string()),
+        filters.parent_task_id,
+        filters.agent_id,
+        tag_json,
+    ])?;
+
+    let mut tasks = Vec::new();
+    while let Some(row) = rows.next()? {
+        tasks.push(row_to_task(row)?);
+    }
+    Ok(tasks)
+}
+
+pub fn claim_task(db: &Database, task_id: &str, agent_id: &str) -> Result<Option<Task>> {
+    let conn = db.lock()?;
+    let now = dt_to_sql(now_utc_naive());
+    let mut stmt = conn.prepare(CLAIM_TASK)?;
+    let task = stmt
+        .query_row(params![agent_id, now, task_id], row_to_task)
+        .optional()?;
+    Ok(task)
+}
+
+pub fn claim_next_task(db: &Database, project_id: &str, agent_id: &str) -> Result<Option<Task>> {
+    let conn = db.lock()?;
+    let now = dt_to_sql(now_utc_naive());
+    let mut stmt = conn.prepare(CLAIM_NEXT_TASK)?;
+    let task = stmt
+        .query_row(params![agent_id, project_id, now], row_to_task)
+        .optional()?;
+    Ok(task)
+}
+
+pub fn start_task(db: &Database, task_id: &str) -> Result<Task> {
+    let conn = db.lock()?;
+    let now = dt_to_sql(now_utc_naive());
+    let changed = conn.execute(START_TASK, params![task_id, now])?;
+    if changed == 0 {
+        return Err(PlanqError::InvalidTransition(format!(
+            "task {task_id} must be claimed to start"
+        ))
+        .into());
+    }
+    drop(conn);
+    get_task(db, task_id)
+}
+
+pub fn complete_task(
+    db: &Database,
+    task_id: &str,
+    result: Option<serde_json::Value>,
+) -> Result<Task> {
+    let conn = db.lock()?;
+    let now = dt_to_sql(now_utc_naive());
+    let result_json = match result {
+        Some(value) => Some(serde_json::to_string(&value)?),
+        None => None,
+    };
+    let changed = conn.execute(COMPLETE_TASK, params![task_id, result_json, now])?;
+    if changed == 0 {
+        return Err(PlanqError::InvalidTransition(format!(
+            "task {task_id} must be running to complete"
+        ))
+        .into());
+    }
+    drop(conn);
+    get_task(db, task_id)
+}
+
+pub fn fail_task(db: &Database, task_id: &str, error: &str) -> Result<Task> {
+    let conn = db.lock()?;
+    let now = dt_to_sql(now_utc_naive());
+    let changed = conn.execute(FAIL_TASK, params![task_id, error, now])?;
+    if changed == 0 {
+        return Err(PlanqError::InvalidTransition(format!(
+            "task {task_id} must be running to fail"
+        ))
+        .into());
+    }
+    drop(conn);
+    get_task(db, task_id)
+}
+
+pub fn cancel_task(db: &Database, task_id: &str, cascade: bool) -> Result<usize> {
+    let conn = db.lock()?;
+    let now = dt_to_sql(now_utc_naive());
+    let changed = conn.execute(CANCEL_TASK, params![task_id, now])?;
+    let mut total = changed;
+    if cascade {
+        total += conn.execute(CANCEL_DOWNSTREAM, params![task_id, now])?;
+    }
+    Ok(total)
+}
+
+pub fn update_heartbeat(db: &Database, task_id: &str) -> Result<usize> {
+    let conn = db.lock()?;
+    let now = dt_to_sql(now_utc_naive());
+    Ok(conn.execute(UPDATE_HEARTBEAT, params![task_id, now])?)
+}
+
+pub fn update_progress(
+    db: &Database,
+    task_id: &str,
+    progress: Option<i32>,
+    note: Option<String>,
+) -> Result<usize> {
+    let conn = db.lock()?;
+    let now = dt_to_sql(now_utc_naive());
+    Ok(conn.execute(UPDATE_PROGRESS, params![task_id, progress, note, now])?)
+}
+
+pub fn approve_task(
+    db: &Database,
+    task_id: &str,
+    approval_status: &str,
+    approved_by: Option<String>,
+    approval_comment: Option<String>,
+) -> Result<usize> {
+    let conn = db.lock()?;
+    let now = dt_to_sql(now_utc_naive());
+    Ok(conn.execute(
+        APPROVE_TASK,
+        params![task_id, approval_status, approved_by, approval_comment, now],
+    )?)
+}
+
+pub fn update_task(
+    db: &Database,
+    task_id: &str,
+    title: Option<String>,
+    description: Option<String>,
+    kind: Option<TaskKind>,
+    priority: Option<i32>,
+    metadata: Option<serde_json::Value>,
+) -> Result<Task> {
+    let existing = get_task(db, task_id)?;
+    match existing.status {
+        TaskStatus::Done | TaskStatus::DonePartial | TaskStatus::Cancelled => {
+            return Err(PlanqError::InvalidTransition(format!(
+                "task {task_id} is {} and cannot be updated",
+                existing.status
+            ))
+            .into());
+        }
+        _ => {}
+    }
+
+    let conn = db.lock()?;
+    let now = dt_to_sql(now_utc_naive());
+
+    let mut sets = Vec::new();
+    let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+
+    if let Some(ref t) = title {
+        sets.push("title = ?");
+        param_values.push(Box::new(t.clone()));
+    }
+    if let Some(ref d) = description {
+        sets.push("description = ?");
+        param_values.push(Box::new(d.clone()));
+    }
+    if let Some(ref k) = kind {
+        sets.push("kind = ?");
+        param_values.push(Box::new(k.to_string()));
+    }
+    if let Some(p) = priority {
+        sets.push("priority = ?");
+        param_values.push(Box::new(p));
+    }
+    if let Some(ref m) = metadata {
+        sets.push("metadata = ?");
+        param_values.push(Box::new(serde_json::to_string(m)?));
+    }
+
+    if sets.is_empty() {
+        return Ok(existing);
+    }
+
+    sets.push("updated_at = ?");
+    param_values.push(Box::new(now));
+
+    let sql = format!("UPDATE tasks SET {} WHERE id = ?", sets.join(", "));
+    param_values.push(Box::new(task_id.to_string()));
+
+    let params: Vec<&dyn rusqlite::types::ToSql> =
+        param_values.iter().map(|b| b.as_ref()).collect();
+    conn.execute(&sql, rusqlite::params_from_iter(params))?;
+    drop(conn);
+
+    get_task(db, task_id)
+}
+
+pub fn pause_task(
+    db: &Database,
+    task_id: &str,
+    progress: Option<i32>,
+    note: Option<String>,
+) -> Result<Task> {
+    let current = get_task(db, task_id)?;
+    if !matches!(current.status, TaskStatus::Running | TaskStatus::Claimed) {
+        return Err(PlanqError::InvalidTransition(format!(
+            "task {task_id} must be running or claimed to pause"
+        ))
+        .into());
+    }
+
+    let mut metadata_obj = match current.metadata {
+        Some(Value::Object(obj)) => obj,
+        _ => Map::new(),
+    };
+    if let Some(agent) = current.agent_id {
+        metadata_obj.insert("previous_agent".to_string(), Value::String(agent));
+    }
+
+    let metadata_json = serde_json::to_string(&Value::Object(metadata_obj))?;
+    let conn = db.lock()?;
+    let now = dt_to_sql(now_utc_naive());
+    let changed = conn.execute(
+        PAUSE_TASK,
+        params![task_id, progress, note, metadata_json, now],
+    )?;
+    if changed == 0 {
+        return Err(PlanqError::InvalidTransition(format!(
+            "task {task_id} must be running or claimed to pause"
+        ))
+        .into());
+    }
+    drop(conn);
+    get_task(db, task_id)
+}
+
+pub fn get_handoff_context(db: &Database, task_id: &str) -> Result<Vec<HandoffEntry>> {
+    let conn = db.lock()?;
+    let mut stmt = conn.prepare(SELECT_HANDOFF_CONTEXT)?;
+    let mut rows = stmt.query(params![task_id])?;
+    let mut entries = Vec::new();
+    while let Some(row) = rows.next()? {
+        let result_raw: Option<String> = row.get(2)?;
+        entries.push(HandoffEntry {
+            from_task_id: row.get(0)?,
+            from_title: row.get(1)?,
+            result: parse_json(result_raw)?,
+            agent_id: row.get(3)?,
+        });
+    }
+    Ok(entries)
+}
+
+pub fn batch_create_tasks(db: &Database, tasks: &[Task]) -> Result<usize> {
+    let mut conn = db.lock()?;
+    let tx = conn.transaction()?;
+    let mut inserted = 0usize;
+    for task in tasks {
+        let result = json_to_sql(&task.result)?;
+        let metadata = json_to_sql(&task.metadata)?;
+        tx.execute(
+            INSERT_TASK,
+            params![
+                &task.id,
+                &task.project_id,
+                &task.parent_task_id,
+                task.is_composite,
+                &task.title,
+                &task.description,
+                &task.status,
+                &task.kind,
+                task.priority,
+                &task.agent_id,
+                task.claimed_at.map(dt_to_sql),
+                task.started_at.map(dt_to_sql),
+                task.completed_at.map(dt_to_sql),
+                &result,
+                &task.error,
+                task.progress,
+                &task.progress_note,
+                task.max_retries,
+                task.retry_count,
+                &task.retry_backoff,
+                task.retry_delay_ms,
+                task.timeout_seconds,
+                task.heartbeat_interval,
+                task.last_heartbeat.map(dt_to_sql),
+                task.requires_approval,
+                &task.approval_status,
+                &task.approved_by,
+                &task.approval_comment,
+                &metadata,
+                dt_to_sql(task.created_at),
+                dt_to_sql(task.updated_at)
+            ],
+        )?;
+        inserted += 1;
+    }
+    tx.commit()?;
+    Ok(inserted)
+}
+
+pub fn promote_ready_tasks(db: &Database) -> Result<usize> {
+    let conn = db.lock()?;
+    let now = dt_to_sql(now_utc_naive());
+    Ok(conn.execute(PROMOTE_READY, params![now])?)
+}
+
+pub(crate) fn count_tasks_by_status(db: &Database, status: TaskStatus) -> Result<i64> {
+    let conn = db.lock()?;
+    let count: i64 = conn.query_row(COUNT_TASKS_BY_STATUS, params![status.to_string()], |r| {
+        r.get(0)
+    })?;
+    Ok(count)
+}
+
+pub(crate) fn _task_columns() -> &'static str {
+    TASK_COLUMNS
+}

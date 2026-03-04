@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "quicknote"
+version = "0.1.0"
+description = "Local note-taking CLI backed by SQLite"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["click>=8.1.0"]
+
+[project.scripts]
+quicknote = "quicknote.cli:cli"
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
