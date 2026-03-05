@@ -68,7 +68,12 @@ pub fn run(db: &Database, command: ProjectCommand, json: bool, compact: bool) ->
             if json {
                 print_json(&project)?;
             } else {
-                println!("created project {} ({})", project.id, project.name);
+                println!("created {} ({})", project.id, project.name);
+                if !compact {
+                    eprintln!();
+                    eprintln!("next: plandb add --title \"First task\"");
+                    eprintln!("tip:  start with 1-2 tasks. add more as you learn things.");
+                }
             }
         }
         ProjectSubcommand::List(args) => {
@@ -249,15 +254,76 @@ pub fn status_cmd(
                 "{} {}: {}/{} done ({}%)",
                 project.id, project.name, done, total, progress_pct
             );
+
+            let by_id: HashMap<String, &crate::models::Task> =
+                tasks.iter().map(|t| (t.id.clone(), t)).collect();
+            let mut children: HashMap<String, Vec<String>> = HashMap::new();
+            let mut has_parent: HashSet<String> = HashSet::new();
             for task in &tasks {
-                let mut line =
-                    format!("  {} {} {}", status_icon(&task.status), task.id, task.title);
+                if let Ok(deps) = list_dependencies(db, &task.id) {
+                    for dep in deps {
+                        if dep.from_task != task.id {
+                            children
+                                .entry(dep.from_task.clone())
+                                .or_default()
+                                .push(dep.to_task.clone());
+                            has_parent.insert(dep.to_task);
+                        }
+                    }
+                }
+            }
+            let roots: Vec<_> = tasks
+                .iter()
+                .filter(|t| !has_parent.contains(&t.id))
+                .collect();
+
+            fn print_dag_node(
+                task_id: &str,
+                by_id: &HashMap<String, &crate::models::Task>,
+                children: &HashMap<String, Vec<String>>,
+                prefix: &str,
+                last: bool,
+                visited: &mut HashSet<String>,
+            ) {
+                let Some(task) = by_id.get(task_id) else {
+                    return;
+                };
+                let icon = crate::cli::status_icon(&task.status);
+                let connector = if prefix.is_empty() {
+                    "".to_string()
+                } else if last {
+                    "└─".to_string()
+                } else {
+                    "├─".to_string()
+                };
+                let mut line = format!("{prefix}{connector}{icon} {} {}", task.id, task.title);
                 if let Some(agent) = &task.agent_id {
                     if matches!(task.status, TaskStatus::Running | TaskStatus::Claimed) {
                         line.push_str(&format!(" @{agent}"));
                     }
                 }
                 println!("{line}");
+                if !visited.insert(task_id.to_string()) {
+                    return;
+                }
+                let kids = children.get(task_id).cloned().unwrap_or_default();
+                let next_prefix = if prefix.is_empty() {
+                    "  ".to_string()
+                } else if last {
+                    format!("{prefix}  ")
+                } else {
+                    format!("{prefix}│ ")
+                };
+                for (i, kid) in kids.iter().enumerate() {
+                    let kid_last = i == kids.len() - 1;
+                    print_dag_node(kid, by_id, children, &next_prefix, kid_last, visited);
+                }
+            }
+
+            let mut visited = HashSet::new();
+            for (i, root) in roots.iter().enumerate() {
+                let last = i == roots.len() - 1;
+                print_dag_node(&root.id, &by_id, &children, "", last, &mut visited);
             }
         }
         return Ok(());

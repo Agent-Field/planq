@@ -277,6 +277,6 @@ pub fn run_sweep(db: &Database) -> Result<SweepResult> {
         }
     }
 
-    result.promoted = promote_ready_tasks(db)?;
+    result.promoted = promote_ready_tasks(db)?.len();
     Ok(result)
 }

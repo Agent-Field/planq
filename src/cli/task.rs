@@ -1215,7 +1215,60 @@ pub fn go_cmd(db: &Database, args: &GoArgs, json: bool) -> Result<()> {
     } else if response["task"].is_null() {
         println!("no ready task found");
     } else {
-        println!("started {}", response["task"]["id"].as_str().unwrap_or(""));
+        let task_id = response["task"]["id"].as_str().unwrap_or("");
+        let title = response["task"]["title"].as_str().unwrap_or("");
+        let remaining = &response["remaining"];
+        let done = remaining["done"].as_u64().unwrap_or(0);
+        let total = remaining["total"].as_u64().unwrap_or(0);
+        let ready = remaining["ready"].as_u64().unwrap_or(0);
+        let pending = remaining["pending"].as_u64().unwrap_or(0);
+
+        println!(
+            "→ {} \"{}\" [{}/{} · {} ready · {} blocked]",
+            task_id, title, done, total, ready, pending
+        );
+
+        if let Some(handoff) = response["handoff"].as_array() {
+            if !handoff.is_empty() {
+                eprintln!();
+                eprintln!("upstream:");
+                for h in handoff {
+                    let from_id = h["from_task"].as_str().unwrap_or("");
+                    let result = h["result"]
+                        .as_str()
+                        .or_else(|| {
+                            if h["result"].is_null() {
+                                None
+                            } else {
+                                Some("(structured)")
+                            }
+                        })
+                        .unwrap_or("(no result)");
+                    let result_display = if result.len() > 120 {
+                        format!("{}…", &result[..117])
+                    } else {
+                        result.to_string()
+                    };
+                    eprintln!("  {} → {}", from_id, result_display);
+                }
+            }
+        }
+
+        if let Ok(deps) = list_dependencies(db, task_id) {
+            let downstream: Vec<_> = deps.iter().filter(|d| d.from_task == task_id).collect();
+            if !downstream.is_empty() {
+                eprintln!();
+                for d in &downstream {
+                    let to_title = get_task(db, &d.to_task)
+                        .map(|t| t.title)
+                        .unwrap_or_default();
+                    eprintln!(
+                        "downstream: {} \"{}\" (receives YOUR result)",
+                        d.to_task, to_title
+                    );
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -1235,25 +1288,21 @@ pub fn done_cmd(db: &Database, args: DoneArgs, json: bool, compact: bool) -> Res
         let paths = parse_files_arg(&files);
         let _ = add_task_files(db, &task.id, &paths)?;
     }
-    let _ = promote_ready_tasks(db)?;
-    // Handoff visibility warning
-    if !result_provided {
-        if let Ok(deps) = list_dependencies(db, &task.id) {
-            let feeds_count = deps
-                .iter()
-                .filter(|d| {
-                    d.from_task == task.id
-                        && matches!(d.kind, crate::models::DependencyKind::FeedsInto)
-                })
-                .count();
-            if feeds_count > 0 {
-                eprintln!(
-                    "hint: this task feeds into {feeds_count} downstream task(s). Consider: plandb done {} --result '{{\"key\": \"value\"}}'",
-                    task.id
-                );
-            }
-        }
+    let promoted = promote_ready_tasks(db)?;
+
+    let has_downstream = list_dependencies(db, &task.id)
+        .map(|deps| deps.iter().any(|d| d.from_task == task.id))
+        .unwrap_or(false);
+
+    if !result_provided && has_downstream {
+        eprintln!(
+            "hint: this task has downstream dependents. Consider: plandb done {} --result '<your findings>'",
+            task.id
+        );
     }
+
+    let state = project_state(db, &task.project_id)?;
+
     let next = if args.next {
         let agent = args
             .agent
@@ -1262,6 +1311,7 @@ pub fn done_cmd(db: &Database, args: DoneArgs, json: bool, compact: bool) -> Res
     } else {
         None
     };
+
     if json {
         if args.next {
             print_json(&serde_json::json!({
@@ -1273,8 +1323,51 @@ pub fn done_cmd(db: &Database, args: DoneArgs, json: bool, compact: bool) -> Res
         } else {
             print_json(&task)?;
         }
+    } else if args.next && next.is_some() {
+        let n = next.as_ref().unwrap();
+        if n["task"].is_null() {
+            println!(
+                "✓ {} done [{}/{} · {} ready]",
+                task.id, state.done, state.total, state.ready
+            );
+            println!("no ready task to claim next");
+        } else {
+            let next_id = n["task"]["id"].as_str().unwrap_or("");
+            let next_title = n["task"]["title"].as_str().unwrap_or("");
+            println!(
+                "✓ {} done → claimed {} \"{}\" [{}/{} · {} ready]",
+                task.id, next_id, next_title, state.done, state.total, state.ready
+            );
+            if let Some(handoff) = n["handoff"].as_array() {
+                for h in handoff {
+                    let from_id = h["from_task"].as_str().unwrap_or("");
+                    let result_str = h["result"].as_str().unwrap_or("(no result)");
+                    let display = if result_str.len() > 120 {
+                        format!("{}…", &result_str[..117])
+                    } else {
+                        result_str.to_string()
+                    };
+                    eprintln!("  upstream: {} → {}", from_id, display);
+                }
+            }
+        }
     } else {
-        println!("completed {}", task.id);
+        println!(
+            "✓ {} done [{}/{} · {} ready · {} blocked]",
+            task.id, state.done, state.total, state.ready, state.pending
+        );
+        if !promoted.is_empty() {
+            eprintln!();
+            eprintln!("unlocked:");
+            for (id, title) in &promoted {
+                eprintln!("  → {} \"{}\"  (now ready)", id, title);
+            }
+        }
+        if !has_downstream && !compact {
+            eprintln!();
+            eprintln!("hint: no downstream tasks depend on this result. create one?");
+            eprintln!("      plandb add --title \"...\" --dep {}", task.id);
+        }
     }
     Ok(())
 }

@@ -890,10 +890,19 @@ pub fn batch_create_tasks(db: &Database, tasks: &[Task]) -> Result<usize> {
     Ok(inserted)
 }
 
-pub fn promote_ready_tasks(db: &Database) -> Result<usize> {
+/// Returns (task_id, title) pairs for tasks promoted from pending → ready.
+pub fn promote_ready_tasks(db: &Database) -> Result<Vec<(String, String)>> {
     let conn = db.lock()?;
+    let mut stmt = conn.prepare(
+        "SELECT id, title FROM tasks WHERE id IN (SELECT id FROM task_readiness WHERE promotable = 1)",
+    )?;
+    let promoted: Vec<(String, String)> = stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .filter_map(|r| r.ok())
+        .collect();
     let now = dt_to_sql(now_utc_naive());
-    Ok(conn.execute(PROMOTE_READY, params![now])?)
+    conn.execute(PROMOTE_READY, params![now])?;
+    Ok(promoted)
 }
 
 pub fn project_state(db: &Database, project_id: &str) -> Result<ProjectState> {

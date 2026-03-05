@@ -158,6 +158,15 @@ pub enum Commands {
     Overview,
     #[command(hide = true, about = "Alias for 'task start'")]
     Start(task::TaskIdArg),
+    #[command(
+        about = "Create a project and set as default (shortcut for 'plandb project create')"
+    )]
+    Init {
+        #[arg(help = "Project name")]
+        name: String,
+        #[arg(long, help = "Optional description of the project's goal")]
+        description: Option<String>,
+    },
     #[command(hide = true, about = "Alias for '--version'")]
     Version,
     #[command(about = "Start MCP server (stdio JSON-RPC for Claude Code, Cursor, Windsurf)")]
@@ -254,6 +263,21 @@ pub fn run(db: &Database, command: Commands, json: bool, compact: bool) -> Resul
                 print_json(&task)?;
             } else {
                 println!("started {}", task.id);
+            }
+            Ok(())
+        }
+        Commands::Init { name, description } => {
+            let project = crate::db::create_project(db, &name, description, None)?;
+            crate::db::set_meta(db, "current_project", &project.id)?;
+            if json {
+                print_json(&project)?;
+            } else {
+                println!("created {} ({})", project.id, project.name);
+                if !compact {
+                    eprintln!();
+                    eprintln!("next: plandb add --title \"First task\"");
+                    eprintln!("tip:  start with 1-2 tasks. add more as you learn things.");
+                }
             }
             Ok(())
         }
