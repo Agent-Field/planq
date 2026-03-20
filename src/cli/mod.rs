@@ -46,7 +46,7 @@ pub use task::{CreateTaskArgs, DoneArgs, GetTaskArgs, GoArgs, ListTasksArgs, Spl
         \x20 Task states: pending → ready (deps done) → claimed → running → done/failed\n\
         \x20 Dep types:   feeds_into (default, passes result downstream), blocks, suggests\n\
         \x20 Task kinds:  generic, code, research, review, test, shell\n\
-        \x20 IDs:         short 8-char (e.g. t-a1b2c3d4) or custom (--as api → t-api)\n\n\
+        \x20 IDs:         short (e.g. t-k3m9) or custom (--as api → t-api). Fuzzy-matched.\n\n\
         OUTPUT MODES:\n\
         \x20 Default human-readable. --json for structured JSON. -c/--compact for token-efficient output.\n\n\
         ENVIRONMENT:\n\

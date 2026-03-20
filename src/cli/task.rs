@@ -1000,12 +1000,14 @@ pub fn create_task_cmd(
     let project_id = resolve_project_id(db, args.project.as_deref())?;
     let task_id = match args.custom_id {
         Some(ref custom) => {
-            let id = if custom.starts_with("t-") {
-                custom.clone()
-            } else {
-                format!("t-{custom}")
-            };
-            id
+            let name = custom.strip_prefix("t-").unwrap_or(custom);
+            if name.is_empty() || name.len() > 64 {
+                return Err(anyhow!("custom ID must be 1-64 characters"));
+            }
+            if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+                return Err(anyhow!("custom ID must contain only alphanumeric, hyphen, or underscore characters"));
+            }
+            format!("t-{name}")
         }
         None => generate_id("task"),
     };

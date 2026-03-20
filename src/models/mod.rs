@@ -52,8 +52,8 @@ fn next_entropy() -> u64 {
 fn random_suffix() -> String {
     const ALPHABET: &[u8; 36] = b"abcdefghijklmnopqrstuvwxyz0123456789";
     let mut value = next_entropy();
-    let mut out = String::with_capacity(3);
-    for _ in 0..3 {
+    let mut out = String::with_capacity(4);
+    for _ in 0..4 {
         let idx = (value % 36) as usize;
         out.push(ALPHABET[idx] as char);
         value /= 36;

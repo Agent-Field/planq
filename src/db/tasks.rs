@@ -1553,6 +1553,19 @@ pub fn claim_next_task_scoped(
 }
 
 pub fn try_complete_composite_parent(db: &Database, child_task_id: &str) -> Result<Option<Task>> {
+    try_complete_composite_parent_bounded(db, child_task_id, 0)
+}
+
+const MAX_COMPOSITE_DEPTH: u32 = 64;
+
+fn try_complete_composite_parent_bounded(
+    db: &Database,
+    child_task_id: &str,
+    depth: u32,
+) -> Result<Option<Task>> {
+    if depth >= MAX_COMPOSITE_DEPTH {
+        return Ok(None);
+    }
     let child = get_task(db, child_task_id)?;
     let parent_id = match &child.parent_task_id {
         Some(id) => id.clone(),
@@ -1574,7 +1587,7 @@ pub fn try_complete_composite_parent(db: &Database, child_task_id: &str) -> Resu
             crate::db::now_utc_naive(),
         );
         // Recursively check if this parent's parent should also complete
-        let _ = try_complete_composite_parent(db, &parent_id);
+        let _ = try_complete_composite_parent_bounded(db, &parent_id, depth + 1);
         // Promote tasks that depended on this composite
         let _ = promote_ready_tasks(db);
         Ok(Some(parent))
