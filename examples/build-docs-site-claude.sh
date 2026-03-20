@@ -152,10 +152,12 @@ else
   echo "(Watch Claude use PlanDB with parallel sub-agents)"
   echo ""
   cd "$WORK_DIR"
+  # System prompt carries the full context, user message kicks it off
   claude \
     --permission-mode auto \
     --allowedTools "Bash Edit Write Read Grep Glob Agent" \
-    "$PROMPT"
+    --system-prompt "$PROMPT" \
+    "Start. Run plandb init, decompose the work into tasks, then execute with parallel sub-agents. Go."
 fi
 
 # ── Show final status ────────────────────────────────────────────────
