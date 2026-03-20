@@ -152,12 +152,12 @@ else
   echo "(Watch Claude use PlanDB with parallel sub-agents)"
   echo ""
   cd "$WORK_DIR"
-  # System prompt carries the full context, user message kicks it off
+  KICKOFF="Start now. Your working directory is already $(pwd). PLANDB_DB=$PLANDB_DB is set. Run plandb commands directly — no cd needed. Begin with: plandb init \"plandb-docs-site\", then decompose into tasks with dependencies and descriptions, then execute using parallel sub-agents for all ready tasks."
   claude \
     --permission-mode auto \
     --allowedTools "Bash Edit Write Read Grep Glob Agent" \
     --system-prompt "$PROMPT" \
-    "Start. Run plandb init, decompose the work into tasks, then execute with parallel sub-agents. Go."
+    "$KICKOFF"
 fi
 
 # ── Show final status ────────────────────────────────────────────────
