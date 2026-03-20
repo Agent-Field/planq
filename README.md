@@ -68,6 +68,28 @@ plandb add "Build landing page" --as landing --kind code \
 - `--dep` references must point to task IDs that already exist — create upstream tasks first
 - To add a dependency after both tasks exist: `plandb task add-dep --after t-upstream t-downstream`
 
+## When to Decompose
+
+Not every task needs subtasks. Use this decision framework:
+
+**Keep it a flat task when:**
+- A single agent can complete it in one pass
+- The work has no internal ordering constraints
+- The description fits comfortably in one prompt
+
+**Split into subtasks when:**
+- The task has multiple independent parts that could run in parallel (split creates parallelism — each subtask becomes separately claimable)
+- The task is too large for one agent to hold in context
+- The work has internal phases with dependencies (`plandb split --into "Design > Implement > Test"`)
+- You discover mid-execution that the task is more complex than expected
+
+**Go deeper (recursive split) when:**
+- A subtask itself has the same characteristics above
+- Different parts require different expertise or tools
+- You want to isolate failure — if one sub-subtask fails, siblings continue
+
+The hierarchy manages complexity. A well-decomposed graph means each leaf task is simple enough for any agent to execute from its description alone.
+
 ## Decomposition
 
 Split any task into subtasks. Works at any depth (recursive — subtasks can be split further).

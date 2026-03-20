@@ -131,7 +131,12 @@ fn print_prompt_cli(db_path: &str) {
 ## Plandb — Task Graph for Agent Coordination
 
 You have `plandb` (binary in PATH, DB: {db_path}) for dependency-aware task graphs.
-The graph enforces ordering — `plandb go` only returns tasks whose dependencies are done.
+PlanDB is a compound graph — it has two orthogonal structures:
+- **Containment** (hierarchy): tasks can contain subtasks, which can contain sub-subtasks, to any depth
+- **Dependencies** (flow): edges between tasks at any level, controlling execution order
+
+Use both. Dependencies alone give you a flat DAG. Adding hierarchy gives you scoped
+reasoning, recursive decomposition, and subtree-level parallelism.
 
 ### Core Loop (2 commands, no IDs needed)
 ```bash
@@ -167,7 +172,32 @@ Constraints:
 - To add a dep after both tasks exist: `plandb task add-dep --after t-upstream t-downstream`
 - Dep types: `feeds_into` (default), `blocks`, `suggests`. Example: `--dep t-abc:blocks`
 
-### Decomposition (recursive)
+### When to decompose: flat task vs hierarchy
+
+Not every task needs subtasks. Use this decision framework:
+
+**Keep it a flat task when:**
+- A single agent can complete it in one pass
+- The work has no internal ordering constraints
+- The description fits comfortably in one prompt
+
+**Split into subtasks when:**
+- The task has multiple independent parts that could run in parallel
+  (split creates parallelism — each subtask becomes separately claimable)
+- The task is too large for one agent to hold in context
+- The work has internal phases with dependencies between them
+  (use `>` chain: `plandb split --into "Design > Implement > Test"`)
+- You discover mid-execution that the task is more complex than expected
+
+**Go deeper (recursive split) when:**
+- A subtask itself has the same characteristics above
+- Different parts require different expertise or tools
+- You want to isolate failure — if one sub-subtask fails, siblings continue
+
+The hierarchy is your tool for managing complexity. A well-decomposed graph means
+each leaf task is simple enough for any agent to execute from its description alone.
+
+### Decomposition
 ```bash
 plandb split --into "Design, Implement, Test"          # split current task (comma = independent)
 plandb split --into "Design > Implement > Test"         # chain with > (linear deps)
@@ -177,8 +207,12 @@ plandb task replan t-abc --file revised.yaml            # cancel + recreate subt
 ```
 
 Subtasks can be split further (any depth). Composite tasks auto-complete when all children finish.
+When you split, the parent becomes a container — it tracks progress but the real work
+happens in the leaves. This lets you reason about progress at any level of the tree.
 
 ### Scope (zoom into subtrees)
+
+When working within a complex subtree, scope into it to reduce noise:
 ```bash
 plandb use t-abc     # scope into composite task
 plandb list          # shows only children of t-abc
@@ -187,11 +221,34 @@ plandb use ..        # zoom out one level
 plandb use --clear   # back to project root
 ```
 
+Scope is useful when different agents or phases own different subtrees.
+
+### Parallelization
+
+When `plandb list --status ready` returns multiple tasks, they have no unmet dependencies
+and CAN run concurrently. **If you can spawn sub-agents, you SHOULD.**
+
+```bash
+# Worker 1                                    # Worker 2
+PLANDB_AGENT=w1 plandb go                     PLANDB_AGENT=w2 plandb go
+# ... work ...                                # ... work ...
+PLANDB_AGENT=w1 plandb done --next            PLANDB_AGENT=w2 plandb done --next
+```
+
+Parallelism comes from the graph structure:
+- Independent top-level tasks → parallel
+- Independent subtasks within a composite → parallel
+- Splitting a task into independent parts creates new parallelism opportunities
+
+PlanDB handles coordination: atomic claiming prevents double-assignment, dependency
+ordering enforced automatically. The graph tells you exactly what is safe to run concurrently.
+
 ### Status
 ```bash
 plandb status              # progress summary
-plandb status --detail     # per-task breakdown
-plandb list --status ready # filter tasks
+plandb status --detail     # per-task breakdown with dependency tree
+plandb status --full       # all tasks + dependency edges
+plandb list --status ready # what can run now
 plandb show t-abc          # full task details + description
 plandb ahead               # what's next
 plandb --json -c status    # compact JSON for LLM context
@@ -205,23 +262,6 @@ plandb task add-dep --after t-upstream t-downstream       # add dependency edge
 plandb task pivot t-parent --file new-plan.yaml
 plandb what-if cancel t-abc                               # preview effects (safe, read-only)
 ```
-
-### Parallelization
-
-When multiple tasks are in `ready` status (visible via `plandb status --detail` or `plandb list --status ready`),
-they have no dependencies on each other and CAN be executed in parallel.
-
-**If you can spawn sub-agents or parallel workers, you SHOULD.** Each worker runs independently:
-```bash
-# Worker 1                                    # Worker 2
-PLANDB_AGENT=w1 plandb go                     PLANDB_AGENT=w2 plandb go
-# ... work ...                                # ... work ...
-PLANDB_AGENT=w1 plandb done --next            PLANDB_AGENT=w2 plandb done --next
-```
-
-PlanDB handles coordination: atomic claiming prevents double-assignment, dependency ordering is
-enforced automatically. Check `plandb list --status ready` — if it returns multiple tasks,
-parallelize them. The graph tells you exactly what is safe to run concurrently.
 
 ### Reference
 - **States**: pending → ready (deps done) → claimed → running → done/failed/cancelled
