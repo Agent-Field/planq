@@ -152,8 +152,7 @@ else
   echo "(Watch Claude use PlanDB with parallel sub-agents)"
   echo ""
   cd "$WORK_DIR"
-  claude \
-    --append-system-prompt "$PROMPT"
+  claude "$PROMPT"
 fi
 
 # ── Show final status ────────────────────────────────────────────────
