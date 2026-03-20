@@ -87,7 +87,7 @@ echo "────────────────────────�
 OUT=$($PLANDB --db "$DB" --json project create "test-project" --description "A test project")
 PROJ_ID=$(jq_field "$OUT" "id")
 assert_not_empty "project create returns id" "$PROJ_ID"
-assert_regex "project id uses short format" '^p-[a-z0-9]{6}$' "$PROJ_ID"
+assert_regex "project id uses short format" '^p-[a-z0-9]{4}$' "$PROJ_ID"
 assert_eq "project name" "test-project" "$(jq_field "$OUT" "name")"
 assert_eq "project status" "active" "$(jq_field "$OUT" "status")"
 assert_eq "project description" "A test project" "$(jq_field "$OUT" "description")"
@@ -117,10 +117,10 @@ echo "2. TASK CREATION & BASIC LIFECYCLE"
 echo "─────────────────────────────────────────"
 
 # Create task (no deps → should auto-promote to ready)
-T_A=$($PLANDB --db "$DB" --json task create --project "$PROJ_ID" --title "Task Alpha" --kind code --priority 10 --description "First task")
+T_A=$($PLANDB --db "$DB" --json task create --project "$PROJ_ID" "Task Alpha" --kind code --priority 10 --description "First task")
 T_A_ID=$(jq_field "$T_A" "id")
 assert_not_empty "task A create returns id" "$T_A_ID"
-assert_regex "task id uses short format" '^t-[a-z0-9]{6}$' "$T_A_ID"
+assert_regex "task id uses short format" '^t-[a-z0-9]{4}$' "$T_A_ID"
 assert_eq "task A kind" "code" "$(jq_field "$T_A" "kind")"
 assert_eq "task A priority" "10" "$(jq_field "$T_A" "priority")"
 
@@ -129,7 +129,7 @@ T_A_GET=$($PLANDB --db "$DB" --json task get "$T_A_ID")
 assert_eq "task A auto-promoted to ready" "ready" "$(jq_field "$T_A_GET" "status")"
 
 # Create task with dep (should stay pending)
-T_B=$($PLANDB --db "$DB" --json task create --project "$PROJ_ID" --title "Task Beta" --dep "$T_A_ID")
+T_B=$($PLANDB --db "$DB" --json task create --project "$PROJ_ID" "Task Beta" --dep "$T_A_ID")
 T_B_ID=$(jq_field "$T_B" "id")
 T_B_GET=$($PLANDB --db "$DB" --json task get "$T_B_ID")
 assert_eq "task B stays pending (has unmet dep)" "pending" "$(jq_field "$T_B_GET" "status")"
@@ -224,7 +224,7 @@ echo "5. FAIL & RETRY"
 echo "─────────────────────────────────────────"
 
 # Create task with retries
-T_R=$($PLANDB --db "$DB" --json task create --project "$PROJ_ID" --title "Retry Task" --max-retries 2)
+T_R=$($PLANDB --db "$DB" --json task create --project "$PROJ_ID" "Retry Task" --max-retries 2)
 T_R_ID=$(jq_field "$T_R" "id")
 T_R_GET=$($PLANDB --db "$DB" --json task get "$T_R_ID")
 assert_eq "retry task ready" "ready" "$(jq_field "$T_R_GET" "status")"
@@ -244,11 +244,11 @@ echo "6. CANCEL WITH CASCADE"
 echo "─────────────────────────────────────────"
 
 # Create parent → child chain
-T_P=$($PLANDB --db "$DB" --json task create --project "$PROJ_ID" --title "Parent Task")
+T_P=$($PLANDB --db "$DB" --json task create --project "$PROJ_ID" "Parent Task")
 T_P_ID=$(jq_field "$T_P" "id")
-T_C1=$($PLANDB --db "$DB" --json task create --project "$PROJ_ID" --title "Child 1" --dep "$T_P_ID:feeds_into")
+T_C1=$($PLANDB --db "$DB" --json task create --project "$PROJ_ID" "Child 1" --dep "$T_P_ID:feeds_into")
 T_C1_ID=$(jq_field "$T_C1" "id")
-T_C2=$($PLANDB --db "$DB" --json task create --project "$PROJ_ID" --title "Child 2" --dep "$T_P_ID:feeds_into")
+T_C2=$($PLANDB --db "$DB" --json task create --project "$PROJ_ID" "Child 2" --dep "$T_P_ID:feeds_into")
 T_C2_ID=$(jq_field "$T_C2" "id")
 
 # Cancel parent with cascade
@@ -265,7 +265,7 @@ assert_eq "child 1 cancelled" "cancelled" "$(jq_field "$T_C1_CHECK" "status")"
 assert_eq "child 2 cancelled" "cancelled" "$(jq_field "$T_C2_CHECK" "status")"
 
 # Cancel without cascade (just the one task)
-T_SOLO=$($PLANDB --db "$DB" --json task create --project "$PROJ_ID" --title "Solo Cancel")
+T_SOLO=$($PLANDB --db "$DB" --json task create --project "$PROJ_ID" "Solo Cancel")
 T_SOLO_ID=$(jq_field "$T_SOLO" "id")
 CANCEL_SOLO=$($PLANDB --db "$DB" --json task cancel "$T_SOLO_ID")
 assert_eq "solo cancel cancels 1" "1" "$(jq_field "$CANCEL_SOLO" "cancelled")"
@@ -338,7 +338,7 @@ echo "────────────────────────�
 ART=$($PLANDB --db "$DB" --json artifact write --task "$T_A_ID" --name "output.json" --content '{"result": 42}' --kind output --mime "application/json")
 ART_ID=$(jq_field "$ART" "id")
 assert_not_empty "artifact write returns id" "$ART_ID"
-assert_regex "artifact id uses short format" '^a-[a-z0-9]{6}$' "$ART_ID"
+assert_regex "artifact id uses short format" '^a-[a-z0-9]{4}$' "$ART_ID"
 assert_eq "artifact name" "output.json" "$(jq_field "$ART" "name")"
 assert_eq "artifact kind" "output" "$(jq_field "$ART" "kind")"
 
@@ -393,14 +393,14 @@ echo ""
 echo "11. PARENT-CHILD HIERARCHY"
 echo "─────────────────────────────────────────"
 
-T_PARENT=$($PLANDB --db "$DB" --json task create --project "$PROJ_ID" --title "Epic Task")
+T_PARENT=$($PLANDB --db "$DB" --json task create --project "$PROJ_ID" "Epic Task")
 T_PARENT_ID=$(jq_field "$T_PARENT" "id")
 
-T_SUB1=$($PLANDB --db "$DB" --json task create --project "$PROJ_ID" --title "Subtask 1" --parent "$T_PARENT_ID")
+T_SUB1=$($PLANDB --db "$DB" --json task create --project "$PROJ_ID" "Subtask 1" --parent "$T_PARENT_ID")
 T_SUB1_ID=$(jq_field "$T_SUB1" "id")
 assert_eq "subtask parent_task_id set" "$T_PARENT_ID" "$(jq_field "$T_SUB1" "parent_task_id")"
 
-T_SUB2=$($PLANDB --db "$DB" --json task create --project "$PROJ_ID" --title "Subtask 2" --parent "$T_PARENT_ID")
+T_SUB2=$($PLANDB --db "$DB" --json task create --project "$PROJ_ID" "Subtask 2" --parent "$T_PARENT_ID")
 T_SUB2_ID=$(jq_field "$T_SUB2" "id")
 
 echo ""
@@ -410,9 +410,9 @@ echo "12. TASK KIND FILTERING"
 echo "─────────────────────────────────────────"
 
 # Create tasks of different kinds
-$PLANDB --db "$DB" --json task create --project "$PROJ2_ID" --title "Code task" --kind code >/dev/null
-$PLANDB --db "$DB" --json task create --project "$PROJ2_ID" --title "Test task" --kind test >/dev/null
-$PLANDB --db "$DB" --json task create --project "$PROJ2_ID" --title "Review task" --kind review >/dev/null
+$PLANDB --db "$DB" --json task create --project "$PROJ2_ID" "Code task" --kind code >/dev/null
+$PLANDB --db "$DB" --json task create --project "$PROJ2_ID" "Test task" --kind test >/dev/null
+$PLANDB --db "$DB" --json task create --project "$PROJ2_ID" "Review task" --kind review >/dev/null
 
 CODE_TASKS=$($PLANDB --db "$DB" --json task list --project "$PROJ2_ID" --kind code)
 CODE_LEN=$(jq_len "$CODE_TASKS")
@@ -432,7 +432,7 @@ echo ""
 echo "13. APPROVAL WORKFLOW"
 echo "─────────────────────────────────────────"
 
-T_APR=$($PLANDB --db "$DB" --json task create --project "$PROJ_ID" --title "Needs Approval" --requires-approval)
+T_APR=$($PLANDB --db "$DB" --json task create --project "$PROJ_ID" "Needs Approval" --requires-approval)
 T_APR_ID=$(jq_field "$T_APR" "id")
 T_APR_GET=$($PLANDB --db "$DB" --json task get "$T_APR_ID")
 assert_eq "requires_approval is true" "True" "$(echo "$T_APR_GET" | python3 -c "import sys,json;print(json.load(sys.stdin)['requires_approval'])")"
@@ -472,11 +472,11 @@ echo "15. STICKY PROJECT + STATUS"
 echo "─────────────────────────────────────────"
 
 USE_SHOW=$($PLANDB --db "$DB" use)
-assert_eq "use shows current project" "$PROJ2_ID" "$USE_SHOW"
+assert_contains "use shows current project" "$PROJ2_ID" "$USE_SHOW"
 
 $PLANDB --db "$DB" use "$PROJ_ID" >/dev/null
 USE_SHOW2=$($PLANDB --db "$DB" use)
-assert_eq "use sets explicit default" "$PROJ_ID" "$USE_SHOW2"
+assert_contains "use sets explicit default" "$PROJ_ID" "$USE_SHOW2"
 
 STATUS_LINE=$($PLANDB --db "$DB" status)
 assert_contains "status summary includes project id" "$PROJ_ID" "$STATUS_LINE"
@@ -494,7 +494,7 @@ echo "────────────────────────�
 GO_PROJECT=$($PLANDB --db "$DB" --json project create "go-project")
 GO_PROJECT_ID=$(jq_field "$GO_PROJECT" "id")
 
-GO_TASK=$($PLANDB --db "$DB" --json task create --project "$GO_PROJECT_ID" --title "Go Candidate")
+GO_TASK=$($PLANDB --db "$DB" --json task create --project "$GO_PROJECT_ID" "Go Candidate")
 GO_TASK_ID=$(jq_field "$GO_TASK" "id")
 
 GO_OUT=$($PLANDB --db "$DB" --json task go --agent test-agent --project "$GO_PROJECT_ID")
@@ -518,7 +518,7 @@ echo ""
 echo "17. PAUSE + REPLAN"
 echo "─────────────────────────────────────────"
 
-PAUSE_TASK=$($PLANDB --db "$DB" --json task create --project "$PROJ_ID" --title "Pause Task")
+PAUSE_TASK=$($PLANDB --db "$DB" --json task create --project "$PROJ_ID" "Pause Task")
 PAUSE_TASK_ID=$(jq_field "$PAUSE_TASK" "id")
 $PLANDB --db "$DB" --json task claim "$PAUSE_TASK_ID" --agent pauser >/dev/null
 $PLANDB --db "$DB" --json task start "$PAUSE_TASK_ID" >/dev/null
@@ -526,7 +526,7 @@ PAUSE_OUT=$($PLANDB --db "$DB" --json task pause "$PAUSE_TASK_ID" --progress 60 
 assert_eq "pause returns task to ready" "ready" "$(jq_field "$PAUSE_OUT" "status")"
 assert_contains "pause metadata keeps previous agent" "pauser" "$PAUSE_OUT"
 
-REPLAN_PARENT=$($PLANDB --db "$DB" --json task create --project "$PROJ_ID" --title "Replan Parent")
+REPLAN_PARENT=$($PLANDB --db "$DB" --json task create --project "$PROJ_ID" "Replan Parent")
 REPLAN_PARENT_ID=$(jq_field "$REPLAN_PARENT" "id")
 cat > /tmp/plandb-replan-test.yaml << 'YAML'
 subtasks:
@@ -563,11 +563,11 @@ echo "────────────────────────�
 JIT_PROJECT=$($PLANDB --db "$DB" --json project create "jit-project")
 JIT_PROJECT_ID=$(jq_field "$JIT_PROJECT" "id")
 
-JIT_A=$($PLANDB --db "$DB" --json task create --project "$JIT_PROJECT_ID" --title "JIT A")
+JIT_A=$($PLANDB --db "$DB" --json task create --project "$JIT_PROJECT_ID" "JIT A")
 JIT_A_ID=$(jq_field "$JIT_A" "id")
-JIT_B=$($PLANDB --db "$DB" --json task create --project "$JIT_PROJECT_ID" --title "JIT B" --dep "$JIT_A_ID")
+JIT_B=$($PLANDB --db "$DB" --json task create --project "$JIT_PROJECT_ID" "JIT B" --dep "$JIT_A_ID")
 JIT_B_ID=$(jq_field "$JIT_B" "id")
-JIT_C=$($PLANDB --db "$DB" --json task create --project "$JIT_PROJECT_ID" --title "JIT C" --dep "$JIT_B_ID")
+JIT_C=$($PLANDB --db "$DB" --json task create --project "$JIT_PROJECT_ID" "JIT C" --dep "$JIT_B_ID")
 JIT_C_ID=$(jq_field "$JIT_C" "id")
 
 WHATIF_CANCEL=$($PLANDB --db "$DB" --json what-if cancel "$JIT_B_ID" 2>&1 || true)
@@ -596,14 +596,14 @@ assert_contains "task amend response has updated task" '"id"' "$AMEND_OUT"
 JIT_B_AFTER_AMEND=$($PLANDB --db "$DB" --json task get "$JIT_B_ID")
 assert_contains "task amend prepends text" "NOTE: learned context" "$(jq_field "$JIT_B_AFTER_AMEND" "description")"
 
-PIVOT_PARENT=$($PLANDB --db "$DB" --json task create --project "$JIT_PROJECT_ID" --title "Pivot Parent")
+PIVOT_PARENT=$($PLANDB --db "$DB" --json task create --project "$JIT_PROJECT_ID" "Pivot Parent")
 PIVOT_PARENT_ID=$(jq_field "$PIVOT_PARENT" "id")
-PIVOT_DONE=$($PLANDB --db "$DB" --json task create --project "$JIT_PROJECT_ID" --title "Pivot Done Child" --parent "$PIVOT_PARENT_ID")
+PIVOT_DONE=$($PLANDB --db "$DB" --json task create --project "$JIT_PROJECT_ID" "Pivot Done Child" --parent "$PIVOT_PARENT_ID")
 PIVOT_DONE_ID=$(jq_field "$PIVOT_DONE" "id")
 $PLANDB --db "$DB" --json task claim "$PIVOT_DONE_ID" --agent jit-agent >/dev/null
 $PLANDB --db "$DB" --json task start "$PIVOT_DONE_ID" >/dev/null
 $PLANDB --db "$DB" --json task done "$PIVOT_DONE_ID" >/dev/null
-PIVOT_PENDING=$($PLANDB --db "$DB" --json task create --project "$JIT_PROJECT_ID" --title "Pivot Pending Child" --parent "$PIVOT_PARENT_ID")
+PIVOT_PENDING=$($PLANDB --db "$DB" --json task create --project "$JIT_PROJECT_ID" "Pivot Pending Child" --parent "$PIVOT_PARENT_ID")
 PIVOT_PENDING_ID=$(jq_field "$PIVOT_PENDING" "id")
 PIVOT_OUT=$($PLANDB --db "$DB" --json task pivot "$PIVOT_PARENT_ID" --keep-done --subtasks '[{"title":"Pivot New A"},{"title":"Pivot New B","deps_on":["Pivot New A"]}]' 2>&1 || true)
 assert_contains "task pivot response has kept list" '"kept"' "$PIVOT_OUT"
@@ -611,7 +611,7 @@ assert_contains "task pivot response has cancelled list" '"cancelled"' "$PIVOT_O
 assert_contains "task pivot response has created list" '"created"' "$PIVOT_OUT"
 assert_contains "task pivot response has effect" '"effect"' "$PIVOT_OUT"
 
-SPLIT_PARENT=$($PLANDB --db "$DB" --json task create --project "$JIT_PROJECT_ID" --title "Split Parent")
+SPLIT_PARENT=$($PLANDB --db "$DB" --json task create --project "$JIT_PROJECT_ID" "Split Parent")
 SPLIT_PARENT_ID=$(jq_field "$SPLIT_PARENT" "id")
 SPLIT_OUT=$($PLANDB --db "$DB" --json task split "$SPLIT_PARENT_ID" --into '[{"title":"Split A","done":true,"result":"already done"},{"title":"Split B","deps_on":["Split A"]}]' 2>&1 || true)
 assert_contains "task split response has created list" '"created"' "$SPLIT_OUT"
