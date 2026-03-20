@@ -149,14 +149,23 @@ plandb init "my-project"
 
 ### Adding Tasks
 ```bash
-plandb add "Design API"                          # positional title
-plandb add "Implement" --dep t-abc               # with dependency
+plandb add "Design API" --description "Define REST endpoints, auth, response schemas"
+plandb add "Implement" --dep t-abc --description "Build server per API spec from t-abc"
 plandb add "Implement" --as impl                 # custom ID → t-impl
-plandb add "Auth" --kind code --priority 10      # with metadata
+plandb add "Auth" --kind code --priority 10      # kind: generic, code, research, review, test, shell
 plandb add "Tests" --dep t-abc --dep t-def       # multiple deps
 ```
 
-Dep types: `feeds_into` (default), `blocks`, `suggests`. Example: `--dep t-abc:blocks`
+EVERY task should have `--description` with a detailed spec — the title is a label, the description
+is the actual work order. It must be self-contained: what to build, files to create, acceptance
+criteria, constraints. An agent picking up the task via `plandb go` + `plandb show <id>` should
+know exactly what to do without any other context.
+
+Constraints:
+- `--kind` ONLY accepts: generic, code, research, review, test, shell
+- `--dep` upstream tasks must already exist — create in dependency order
+- To add a dep after both tasks exist: `plandb task add-dep --after t-upstream t-downstream`
+- Dep types: `feeds_into` (default), `blocks`, `suggests`. Example: `--dep t-abc:blocks`
 
 ### Decomposition (recursive)
 ```bash
@@ -183,7 +192,7 @@ plandb use --clear   # back to project root
 plandb status              # progress summary
 plandb status --detail     # per-task breakdown
 plandb list --status ready # filter tasks
-plandb show t-abc          # task details
+plandb show t-abc          # full task details + description
 plandb ahead               # what's next
 plandb --json -c status    # compact JSON for LLM context
 ```
@@ -192,8 +201,9 @@ plandb --json -c status    # compact JSON for LLM context
 ```bash
 plandb task insert --after t-a --before t-b --title "Add validation"
 plandb task amend t-abc --prepend "NOTE: use JWT"
+plandb task add-dep --after t-upstream t-downstream       # add dependency edge
 plandb task pivot t-parent --file new-plan.yaml
-plandb what-if cancel t-abc                        # preview effects (safe, read-only)
+plandb what-if cancel t-abc                               # preview effects (safe, read-only)
 ```
 
 ### Multi-Agent
@@ -205,10 +215,11 @@ PLANDB_AGENT=worker-2 plandb go && PLANDB_AGENT=worker-2 plandb done --next
 ### Reference
 - **States**: pending → ready (deps done) → claimed → running → done/failed/cancelled
 - **Dep types**: `feeds_into` (data flows), `blocks` (ordering), `suggests` (soft)
-- **Kinds**: generic, code, research, review, test, shell
-- **IDs**: short (`t-k3m`), fuzzy-matched on typos, custom via `--as`
+- **Kinds**: generic, code, research, review, test, shell (NO other values)
+- **IDs**: short (`t-k3m9`), fuzzy-matched on typos, custom via `--as`
 - **Output**: `--json` for structured, `-c` for compact, default human-readable
-- **Handoff**: `--result` on `done` passes data to downstream tasks via `go`"#
+- **Handoff**: `--result` on `done` passes data to downstream tasks via `go`
+- **Descriptions**: always use `--description` — it's the actual work spec, not the title"#
     );
 }
 

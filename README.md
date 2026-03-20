@@ -12,10 +12,11 @@ cargo install --path .
 
 ```bash
 plandb init "my-project"
-plandb add "Design the API"
-plandb add "Implement backend" --dep t-abc
-plandb add "Write tests" --dep t-abc
+plandb add "Design the API" --as design --description "Define REST endpoints, auth strategy, response schemas"
+plandb add "Implement backend" --dep t-design --description "Build Express server implementing the API spec from t-design"
+plandb add "Write tests" --dep t-design --description "Integration tests for all endpoints defined in t-design"
 plandb go                    # claim next ready task
+plandb show t-design         # read the full description
 # ... do work ...
 plandb done --next           # complete + claim next
 ```
@@ -35,14 +36,37 @@ plandb done --next # complete current + claim next
 
 ## Adding Tasks
 
+Every task needs a `--description` — the detailed spec of what to do. The title is a short label. The description is the actual work order.
+
 ```bash
-plandb add "Task title"                          # positional title
-plandb add "Task title" --dep t-abc              # with dependency
-plandb add "Task title" --as api                 # custom ID → t-api
-plandb add "Task title" --kind code --priority 5 # with metadata
-plandb add "Task title" --dep t-abc:blocks       # dep type: feeds_into|blocks|suggests
-plandb add "Task title" --tag backend --tag auth # with tags
+plandb add "Task title" --description "Full spec of what to build..."   # ALWAYS include description
+plandb add "Task title" --dep t-abc                                     # with dependency (upstream must exist first)
+plandb add "Task title" --as api                                        # custom ID → t-api
+plandb add "Task title" --kind code                                     # kind: generic, code, research, review, test, shell
+plandb add "Task title" --dep t-abc:blocks                              # dep type: feeds_into (default), blocks, suggests
+plandb add "Task title" --tag backend --tag auth                        # with tags
 ```
+
+### Writing Good Descriptions
+
+Each description should be a self-contained work order — detailed enough that an agent can pick it up with `plandb go` + `plandb show <id>` and execute without any other context:
+
+```bash
+plandb add "Build landing page" --as landing --kind code \
+  --description "Create index.html with:
+- Hero section: h1 'PlanDB', tagline, brief description
+- Feature highlights: compound graph, recursive decomposition, zero-friction CLI
+- Code snippet showing the core loop (plandb go / plandb done --next)
+- Call-to-action linking to getting-started.html
+- Responsive layout, vanilla HTML/CSS only
+- Output: index.html"
+```
+
+### Constraints
+
+- `--kind` only accepts: `generic`, `code`, `research`, `review`, `test`, `shell`
+- `--dep` references must point to task IDs that already exist — create upstream tasks first
+- To add a dependency after both tasks exist: `plandb task add-dep --after t-upstream t-downstream`
 
 ## Decomposition
 
@@ -58,10 +82,7 @@ plandb split t-abc --into "Design > Implement > Test"
 # Omit task ID to split your current running task
 plandb split --into "Part A, Part B"
 
-# JSON for full control
-plandb task split t-abc --into '[{"title":"A","deps_on":[]},{"title":"B","deps_on":["A"]}]'
-
-# From YAML file
+# From YAML file (full control)
 plandb task decompose t-abc --file subtasks.yaml
 
 # Cancel pending subtasks and recreate
@@ -92,17 +113,18 @@ plandb status              # progress summary
 plandb status --detail     # per-task breakdown
 plandb list                # all tasks
 plandb list --status ready # filter by status
-plandb show t-abc          # full task details
+plandb show t-abc          # full task details + description
 plandb ahead               # what becomes ready next
 ```
 
 ## Plan Adaptation
 
 ```bash
-plandb task insert --after t-a --before t-b --title "New step"  # insert between
-plandb task amend t-abc --prepend "NOTE: edge case found"       # annotate future task
-plandb task pivot t-abc --file new-plan.yaml                    # replace subtree
-plandb what-if cancel t-abc                                     # preview effects
+plandb task insert --after t-a --before t-b --title "New step"   # insert between
+plandb task amend t-abc --prepend "NOTE: edge case found"        # annotate future task
+plandb task pivot t-abc --file new-plan.yaml                     # replace subtree
+plandb task add-dep --after t-upstream t-downstream              # add dependency edge
+plandb what-if cancel t-abc                                      # preview effects
 ```
 
 ## Multi-Agent
@@ -127,9 +149,12 @@ tasks:
   - title: "Design API"
     kind: code
     priority: 10
+    description: "Define REST endpoints, auth strategy, response format"
   - title: "Implement"
+    description: "Build the server implementing the API spec"
     deps: [{ from: "Design API", kind: feeds_into }]
   - title: "Write tests"
+    description: "Integration tests for all endpoints"
     deps: [{ from: "Implement", kind: feeds_into }]
 ```
 
@@ -157,7 +182,7 @@ Tasks become `ready` when all `feeds_into` and `blocks` dependencies complete. `
 
 ## IDs
 
-Short IDs: `t-k3m` (tasks), `p-abc` (projects). Fuzzy-matched on typos.
+Short IDs: `t-k3m9` (tasks), `p-abcd` (projects). Fuzzy-matched on typos.
 
 Custom IDs: `plandb add "Design" --as design` → `t-design`
 
