@@ -59,6 +59,7 @@ plandb init "project-name"                                  # create a project
 plandb add "short title" --description "detailed spec..."   # add a task WITH description
 plandb add "task" --dep t-xxx                               # add with dependency
 plandb add "task" --as my-id                                # custom ID → t-my-id
+plandb add "task" --kind code                               # kinds: generic, code, research, review, test, shell (NO other values)
 plandb go                                                    # claim next ready task
 plandb done --next                                           # complete current + claim next
 plandb split --into "A, B, C"                                # split into independent parts
@@ -66,6 +67,11 @@ plandb split --into "A > B > C"                              # split into depend
 plandb status --detail                                       # see the full task graph
 plandb show <task-id>                                        # see task details + description
 ```
+
+IMPORTANT constraints:
+- --kind ONLY accepts: generic, code, research, review, test, shell. No other values (not "docs", not "design", etc). Use "generic" if unsure.
+- --dep references must point to task IDs that already exist. Add tasks in dependency order.
+- --description should be a single string (quote it). Newlines inside are fine.
 
 ## CRITICAL: How to create tasks
 
