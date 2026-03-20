@@ -32,7 +32,6 @@ echo "╚═══════════════════════�
 echo ""
 
 # ── Build the prompt ─────────────────────────────────────────────────
-# Just the task + plandb reference. No pre-seeded graph.
 
 PROMPT=$(cat <<'PROMPT_EOF'
 ## Task
@@ -52,27 +51,63 @@ Design: clean, minimal, professional. No heavy JS frameworks — vanilla HTML/CS
 
 ## Tool: PlanDB
 
-You have `plandb` installed. Use it to plan and track your own work on this project. This is the demo — the tool eating its own dogfood.
+You have `plandb` installed. Use it to plan and track your own work on this project.
 
 Quick reference:
 ```
-plandb init "project-name"              # create a project
-plandb add "task title"                 # add a task
-plandb add "task" --dep t-xxx           # add with dependency
-plandb add "task" --as my-id            # custom ID → t-my-id
-plandb go                               # claim next ready task
-plandb done --next                      # complete current + claim next
-plandb split --into "A, B, C"           # split current task into independent parts
-plandb split --into "A > B > C"         # split into dependency chain
-plandb status --detail                  # see the full task graph
-plandb show <task-id>                   # see task details
+plandb init "project-name"                                  # create a project
+plandb add "short title" --description "detailed spec..."   # add a task WITH description
+plandb add "task" --dep t-xxx                               # add with dependency
+plandb add "task" --as my-id                                # custom ID → t-my-id
+plandb go                                                    # claim next ready task
+plandb done --next                                           # complete current + claim next
+plandb split --into "A, B, C"                                # split into independent parts
+plandb split --into "A > B > C"                              # split into dependency chain
+plandb status --detail                                       # see the full task graph
+plandb show <task-id>                                        # see task details + description
 ```
 
-Start by running `plandb init` and decomposing the work into tasks with dependencies.
-Then use `plandb go` / `plandb done --next` as you work through them.
-Split tasks that turn out to be complex. Check `plandb status --detail` periodically.
+## CRITICAL: How to create tasks
 
-The environment variable PLANDB_DB is already set to point to the right database.
+Every task MUST have a --description that contains the full specification of the work.
+The title is a short label. The description is the actual prompt — detailed enough that
+you (or a sub-agent) can pick up the task later with `plandb go` and `plandb show <id>`
+and know EXACTLY what to build without any other context.
+
+Think of each task description as a self-contained work order:
+- What files to create or modify
+- What the output should look like
+- Acceptance criteria
+- Any technical constraints or decisions
+- References to upstream task outputs if relevant
+
+Example:
+```
+plandb add "Build landing page" --as landing --kind code \
+  --description "Create index.html with:
+- Hero section: h1 'PlanDB', tagline 'Task graph primitive for AI agents', brief description
+- Feature highlights: compound graph model, recursive decomposition, zero-friction CLI, multi-agent support
+- Code snippet showing the 2-command core loop (plandb go / plandb done --next)
+- Call-to-action linking to getting-started.html
+- Use shared styles from styles.css (created by design task)
+- Responsive layout, works on mobile
+- No JS frameworks, vanilla HTML/CSS only"
+```
+
+## Workflow
+
+1. Run `plandb init` to create the project
+2. Decompose ALL the work upfront into tasks with dependencies and detailed descriptions
+3. Use `plandb status --detail` to verify the graph looks right
+4. Work through tasks: `plandb go` → read description with `plandb show <id>` → do the work → `plandb done --next`
+5. If a task turns out to be complex while working on it, split it: `plandb split --into "Part A, Part B"`
+6. When splitting, each new subtask also needs a proper description — use `plandb show` after split to verify
+
+If you could spawn sub-agents, each would claim a task with `plandb go`, read its
+full description, execute it independently, and complete with `plandb done --next`.
+The descriptions must be complete enough for that — no implicit context.
+
+The environment variable PLANDB_DB is already set.
 PROMPT_EOF
 )
 
