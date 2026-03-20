@@ -522,6 +522,14 @@ pub fn get_task(db: &Database, task_id: &str) -> Result<Task> {
     task.ok_or_else(|| PlandbError::NotFound(format!("task {task_id}")).into())
 }
 
+/// Find the currently running task for a given agent, if any.
+pub fn get_running_task_for_agent(db: &Database, agent_id: &str) -> Result<Option<Task>> {
+    let conn = db.lock()?;
+    let mut stmt = conn.prepare(SELECT_RUNNING_TASK_FOR_AGENT)?;
+    let task = stmt.query_row(params![agent_id], row_to_task).optional()?;
+    Ok(task)
+}
+
 pub fn fuzzy_find_task(db: &Database, input: &str, project_id: Option<&str>) -> Result<Task> {
     match get_task(db, input) {
         Ok(task) => return Ok(task),
@@ -1515,12 +1523,6 @@ pub fn split_task(db: &Database, task_id: &str, parts: Vec<SplitPart>) -> Result
         done: done_ids,
         title_to_id,
     })
-}
-
-pub fn get_running_task_for_agent(db: &Database, agent_id: &str) -> Result<Option<Task>> {
-    let conn = db.lock()?;
-    let mut stmt = conn.prepare(SELECT_RUNNING_TASK_FOR_AGENT)?;
-    Ok(stmt.query_row(params![agent_id], row_to_task).optional()?)
 }
 
 pub fn claim_next_task_scoped(
