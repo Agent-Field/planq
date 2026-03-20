@@ -181,6 +181,23 @@ pub enum Commands {
     Tasks(ListTasksArgs),
     #[command(hide = true, about = "Alias for 'task list'")]
     Ls(ListTasksArgs),
+    #[command(about = "Show the critical path — longest dependency chain to completion")]
+    CriticalPath {
+        #[arg(long, help = "Project ID (uses default if not set)")]
+        project: Option<String>,
+    },
+    #[command(about = "Find bottleneck tasks — tasks blocking the most downstream work")]
+    Bottlenecks {
+        #[arg(long, help = "Project ID (uses default if not set)")]
+        project: Option<String>,
+        #[arg(long, default_value_t = 5, help = "Number of bottlenecks to show")]
+        limit: i64,
+    },
+    #[command(about = "Show what tasks become ready when a specific task completes")]
+    WhatUnlocks {
+        #[arg(help = "Task ID to check")]
+        task_id: String,
+    },
     #[command(hide = true, about = "Alias for 'status'")]
     Overview,
     #[command(hide = true, about = "Alias for 'task start'")]
@@ -335,6 +352,87 @@ pub fn run(db: &Database, command: Commands, json: bool, compact: bool) -> Resul
             task::done_cmd(db, args, json, compact)
         }
         Commands::Tasks(args) | Commands::Ls(args) => task::list_tasks_cmd(db, args, json, compact),
+        Commands::CriticalPath { project } => {
+            let project_id = resolve_project_id(db, project.as_deref())?;
+            if let Some((path, length)) = crate::db::critical_path(db, &project_id)? {
+                if json {
+                    print_json(&serde_json::json!({"path": path, "length": length}))?;
+                } else {
+                    println!("Critical path ({length} tasks):");
+                    for task_id in path.split(" > ") {
+                        if let Ok(task) = crate::db::get_task(db, task_id) {
+                            println!(
+                                "  {} {} {} [{}]",
+                                status_icon(&task.status),
+                                task.id,
+                                task.title,
+                                task.status
+                            );
+                        }
+                    }
+                }
+            } else if json {
+                print_json(&serde_json::json!({"path": null, "length": 0}))?;
+            } else {
+                println!("no critical path (all tasks done or none exist)");
+            }
+            Ok(())
+        }
+        Commands::Bottlenecks { project, limit } => {
+            let project_id = resolve_project_id(db, project.as_deref())?;
+            let bottlenecks = crate::db::find_bottlenecks(db, &project_id, limit)?;
+            if json {
+                print_json(
+                    &bottlenecks
+                        .iter()
+                        .map(|b| {
+                            serde_json::json!({
+                                "task_id": b.task_id,
+                                "title": b.title,
+                                "status": b.status,
+                                "downstream_count": b.downstream_count
+                            })
+                        })
+                        .collect::<Vec<_>>(),
+                )?;
+            } else if bottlenecks.is_empty() {
+                println!("no bottlenecks (nothing blocking downstream work)");
+            } else {
+                println!("Bottlenecks (tasks blocking the most downstream work):");
+                for b in &bottlenecks {
+                    println!(
+                        "  {} {} — blocks {} tasks [{}]",
+                        b.task_id, b.title, b.downstream_count, b.status
+                    );
+                }
+            }
+            Ok(())
+        }
+        Commands::WhatUnlocks { task_id } => {
+            let unlocked = crate::db::what_unlocks(db, &task_id)?;
+            if json {
+                print_json(
+                    &unlocked
+                        .iter()
+                        .map(|u| {
+                            serde_json::json!({
+                                "task_id": u.task_id,
+                                "title": u.title,
+                                "status": u.status
+                            })
+                        })
+                        .collect::<Vec<_>>(),
+                )?;
+            } else if unlocked.is_empty() {
+                println!("completing {} unlocks no pending tasks", task_id);
+            } else {
+                println!("Completing {} unlocks:", task_id);
+                for u in &unlocked {
+                    println!("  → {} {} [{}]", u.task_id, u.title, u.status);
+                }
+            }
+            Ok(())
+        }
         Commands::Overview => project::status_cmd(db, None, false, false, json, compact),
         Commands::Start(args) => {
             let task = crate::db::start_task(db, &args.task_id)?;

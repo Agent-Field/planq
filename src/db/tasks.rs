@@ -1611,3 +1611,116 @@ pub fn count_children(db: &Database, task_id: &str) -> Result<i64> {
     let conn = db.lock()?;
     Ok(conn.query_row(COUNT_CHILDREN, params![task_id], |row| row.get(0))?)
 }
+
+const CRITICAL_PATH: &str = r#"
+WITH RECURSIVE
+  leaves AS (
+    SELECT t.id
+    FROM tasks t
+    WHERE t.project_id = ?1
+      AND t.status NOT IN ('done', 'done_partial', 'cancelled')
+      AND NOT EXISTS (
+        SELECT 1 FROM dependencies d WHERE d.from_task = t.id
+        AND EXISTS (SELECT 1 FROM tasks t2 WHERE t2.id = d.to_task AND t2.status NOT IN ('done', 'done_partial', 'cancelled'))
+      )
+  ),
+  paths(task_id, depth, path) AS (
+    SELECT id, 0, id FROM leaves
+    UNION ALL
+    SELECT d.from_task, p.depth + 1, d.from_task || ' > ' || p.path
+    FROM dependencies d
+    JOIN paths p ON d.to_task = p.task_id
+    JOIN tasks t ON t.id = d.from_task AND t.status NOT IN ('done', 'done_partial', 'cancelled')
+    WHERE d.kind IN ('feeds_into', 'blocks')
+    AND p.depth < 100
+  )
+SELECT path, depth + 1 as length
+FROM paths
+ORDER BY depth DESC
+LIMIT 1;
+"#;
+
+pub fn critical_path(db: &Database, project_id: &str) -> Result<Option<(String, i64)>> {
+    let conn = db.lock()?;
+    let mut stmt = conn.prepare(CRITICAL_PATH)?;
+    let result = stmt
+        .query_row(params![project_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })
+        .optional()?;
+    Ok(result)
+}
+
+const BOTTLENECKS: &str = r#"
+SELECT t.id, t.title, t.status, COUNT(d.to_task) as downstream_count
+FROM tasks t
+JOIN dependencies d ON d.from_task = t.id
+JOIN tasks downstream ON downstream.id = d.to_task AND downstream.status NOT IN ('done', 'done_partial', 'cancelled')
+WHERE t.project_id = ?1
+  AND t.status NOT IN ('done', 'done_partial', 'cancelled')
+  AND d.kind IN ('feeds_into', 'blocks')
+GROUP BY t.id
+ORDER BY downstream_count DESC
+LIMIT ?2;
+"#;
+
+pub struct Bottleneck {
+    pub task_id: String,
+    pub title: String,
+    pub status: String,
+    pub downstream_count: i64,
+}
+
+pub fn find_bottlenecks(db: &Database, project_id: &str, limit: i64) -> Result<Vec<Bottleneck>> {
+    let conn = db.lock()?;
+    let mut stmt = conn.prepare(BOTTLENECKS)?;
+    let mut rows = stmt.query(params![project_id, limit])?;
+    let mut results = Vec::new();
+    while let Some(row) = rows.next()? {
+        results.push(Bottleneck {
+            task_id: row.get(0)?,
+            title: row.get(1)?,
+            status: row.get(2)?,
+            downstream_count: row.get(3)?,
+        });
+    }
+    Ok(results)
+}
+
+const WHAT_UNLOCKS: &str = r#"
+SELECT t.id, t.title, t.status
+FROM dependencies d
+JOIN tasks t ON t.id = d.to_task
+WHERE d.from_task = ?1
+  AND t.status = 'pending'
+  AND d.kind IN ('feeds_into', 'blocks')
+  AND NOT EXISTS (
+    SELECT 1 FROM dependencies d2
+    JOIN tasks upstream ON upstream.id = d2.from_task
+    WHERE d2.to_task = t.id
+      AND d2.kind IN ('feeds_into', 'blocks')
+      AND upstream.status NOT IN ('done', 'done_partial')
+      AND upstream.id != ?1
+  );
+"#;
+
+pub struct UnlockedTask {
+    pub task_id: String,
+    pub title: String,
+    pub status: String,
+}
+
+pub fn what_unlocks(db: &Database, task_id: &str) -> Result<Vec<UnlockedTask>> {
+    let conn = db.lock()?;
+    let mut stmt = conn.prepare(WHAT_UNLOCKS)?;
+    let mut rows = stmt.query(params![task_id])?;
+    let mut results = Vec::new();
+    while let Some(row) = rows.next()? {
+        results.push(UnlockedTask {
+            task_id: row.get(0)?,
+            title: row.get(1)?,
+            status: row.get(2)?,
+        });
+    }
+    Ok(results)
+}
