@@ -1,6 +1,6 @@
 # PlanDB
 
-Task graph primitive for AI agents. Compound graph (recursive hierarchy + cross-level dependencies) in SQLite with CLI, MCP, and HTTP interfaces.
+Task graph primitive for AI agents. Compound graph — two orthogonal structures (containment tree + dependency DAG) that cross boundaries freely — in SQLite with CLI, MCP, and HTTP interfaces.
 
 ## Install
 
@@ -66,6 +66,7 @@ plandb add "Build landing page" --as landing --kind code \
 
 - `--kind` only accepts: `generic`, `code`, `research`, `review`, `test`, `shell`
 - `--dep` references must point to task IDs that already exist — create upstream tasks first
+- `--dep` can reference any task at any depth — dependencies cross containment boundaries freely
 - To add a dependency after both tasks exist: `plandb task add-dep --after t-upstream t-downstream`
 
 ## When to Decompose
@@ -111,7 +112,7 @@ plandb task decompose t-abc --file subtasks.yaml
 plandb task replan t-abc --file revised.yaml
 ```
 
-Composite tasks auto-complete when all children finish. This bubbles up recursively.
+Composite tasks auto-complete when all children finish — this cascades recursively up the tree. Dependencies can cross containment boundaries: a subtask inside "Backend" can depend on a subtask inside "Frontend".
 
 ## Scope
 
@@ -239,10 +240,10 @@ Generate integration config: `plandb prompt --for mcp|cli|http`
 
 PlanDB uses a **compound graph** model — two independent structures composed together:
 
-- **Place graph** (containment): tasks can contain subtasks recursively, forming a forest
-- **Link graph** (dependencies): DAG edges can cross containment boundaries freely
+- **Place graph** (containment): tasks contain subtasks recursively, forming a forest — like a filesystem
+- **Link graph** (dependencies): DAG edges between tasks at any depth, crossing containment boundaries freely — like a build graph
 
-This is more general than a hypergraph — nesting and flow are orthogonal. A subtask at depth 3 can depend on a task at depth 0 in a different branch.
+These are orthogonal. The containment tree and the dependency DAG are independent. A subtask at depth 3 can depend on a task at depth 0 in a completely different branch. This is strictly more general than a hierarchical DAG or a hypergraph — nesting doesn't constrain flow.
 
 ## License
 

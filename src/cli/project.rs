@@ -239,8 +239,76 @@ pub fn status_cmd(
                 "{} {}: {}/{} done ({}%)",
                 project.id, project.name, done, total, progress_pct
             );
-            println!();
-            println!("Tasks:");
+
+            // Build containment tree from parent_task_id
+            let mut containment_children: HashMap<String, Vec<String>> = HashMap::new();
+            let mut has_containment_parent = HashSet::new();
+            for task in &tasks {
+                if let Some(ref parent_id) = task.parent_task_id {
+                    containment_children
+                        .entry(parent_id.clone())
+                        .or_default()
+                        .push(task.id.clone());
+                    has_containment_parent.insert(task.id.clone());
+                }
+            }
+            let has_hierarchy = !has_containment_parent.is_empty();
+
+            // Print containment tree (if any hierarchy exists)
+            if has_hierarchy {
+                println!();
+                println!("Containment (place graph):");
+                let by_id: HashMap<String, &crate::models::Task> =
+                    tasks.iter().map(|t| (t.id.clone(), t)).collect();
+                let roots: Vec<_> = tasks
+                    .iter()
+                    .filter(|t| !has_containment_parent.contains(&t.id))
+                    .collect();
+                fn print_containment(
+                    task_id: &str,
+                    by_id: &HashMap<String, &crate::models::Task>,
+                    children: &HashMap<String, Vec<String>>,
+                    prefix: &str,
+                    last: bool,
+                ) {
+                    let Some(task) = by_id.get(task_id) else { return };
+                    let icon = crate::cli::status_icon(&task.status);
+                    let connector = if prefix.is_empty() {
+                        "".to_string()
+                    } else if last {
+                        "\u{2514}\u{2500}".to_string()
+                    } else {
+                        "\u{251c}\u{2500}".to_string()
+                    };
+                    let composite = if task.is_composite { " [composite]" } else { "" };
+                    let agent = task.agent_id.as_deref().map(|a| format!(" @{a}")).unwrap_or_default();
+                    println!("  {prefix}{connector}{icon} {} {}{composite}{agent}", task.id, task.title);
+                    if let Some(kids) = children.get(task_id) {
+                        let child_prefix = if prefix.is_empty() {
+                            "  ".to_string()
+                        } else if last {
+                            format!("{prefix}  ")
+                        } else {
+                            format!("{prefix}\u{2502} ")
+                        };
+                        for (i, kid) in kids.iter().enumerate() {
+                            print_containment(kid, by_id, children, &child_prefix, i == kids.len() - 1);
+                        }
+                    }
+                }
+                for (i, root) in roots.iter().enumerate() {
+                    print_containment(&root.id, &by_id, &containment_children, "", i == roots.len() - 1);
+                }
+            }
+
+            // Print flat task list (always)
+            if !has_hierarchy {
+                println!();
+                println!("Tasks:");
+            } else {
+                println!();
+                println!("All tasks (flat):");
+            }
             for task in &tasks {
                 let agent = task
                     .agent_id
@@ -258,7 +326,7 @@ pub fn status_cmd(
             }
             if !all_deps.is_empty() {
                 println!();
-                println!("Dependencies:");
+                println!("Dependencies (link graph):");
                 for dep in &all_deps {
                     println!(
                         "  {} ──{}──> {}",

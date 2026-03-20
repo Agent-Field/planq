@@ -131,12 +131,18 @@ fn print_prompt_cli(db_path: &str) {
 ## Plandb — Task Graph for Agent Coordination
 
 You have `plandb` (binary in PATH, DB: {db_path}) for dependency-aware task graphs.
-PlanDB is a compound graph — it has two orthogonal structures:
-- **Containment** (hierarchy): tasks can contain subtasks, which can contain sub-subtasks, to any depth
-- **Dependencies** (flow): edges between tasks at any level, controlling execution order
+PlanDB is a compound graph — two orthogonal structures composed together:
+- **Containment** (place graph): tasks contain subtasks, which contain sub-subtasks, to any depth — a tree
+- **Dependencies** (link graph): edges between tasks at ANY level, controlling execution order — a DAG
 
-Use both. Dependencies alone give you a flat DAG. Adding hierarchy gives you scoped
-reasoning, recursive decomposition, and subtree-level parallelism.
+These are independent. Dependencies do NOT need to follow the containment tree.
+A subtask at depth 3 can depend on a task at depth 0 in a completely different branch.
+This is what makes it more general than a hierarchical DAG — the nesting and the flow
+are orthogonal, like a filesystem (directories) overlaid with a build graph (make dependencies).
+
+Use both structures. Dependencies alone give you a flat DAG. Adding containment gives you
+scoped reasoning, recursive decomposition, subtree-level parallelism, and automatic
+progress rollup (composite tasks auto-complete when all children finish, recursively).
 
 ### Core Loop (2 commands, no IDs needed)
 ```bash
@@ -171,6 +177,9 @@ Constraints:
 - `--dep` upstream tasks must already exist — create in dependency order
 - To add a dep after both tasks exist: `plandb task add-dep --after t-upstream t-downstream`
 - Dep types: `feeds_into` (default), `blocks`, `suggests`. Example: `--dep t-abc:blocks`
+- **Cross-level deps**: `--dep` can reference ANY task regardless of depth in the containment
+  tree. A leaf subtask can depend on a top-level task in a different branch, or vice versa.
+  The dependency graph and the containment tree are independent structures.
 
 ### When to decompose: flat task vs hierarchy
 
@@ -206,9 +215,14 @@ plandb task decompose t-abc --file subtasks.yaml        # from YAML
 plandb task replan t-abc --file revised.yaml            # cancel + recreate subtasks
 ```
 
-Subtasks can be split further (any depth). Composite tasks auto-complete when all children finish.
-When you split, the parent becomes a container — it tracks progress but the real work
-happens in the leaves. This lets you reason about progress at any level of the tree.
+Subtasks can be split further (any depth). When you split, the parent becomes a composite
+container — real work happens in the leaves. Key behaviors:
+- **Auto-completion**: when all children of a composite finish, the parent auto-completes.
+  This bubbles up recursively — completing the last leaf can cascade completions up the tree.
+- **Cross-level deps**: any task at any depth can depend on any other task at any depth.
+  A subtask inside "Backend" can depend on a subtask inside "Frontend" — deps cross
+  containment boundaries freely.
+- **Progress rollup**: `plandb status --detail` shows progress at every level of the tree.
 
 ### Scope (zoom into subtrees)
 
