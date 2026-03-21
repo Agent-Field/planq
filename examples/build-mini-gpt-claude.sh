@@ -51,82 +51,21 @@ export PLANDB_DB="$WORK_DIR/.plandb.db"
 MODE="${1:---interactive}"
 
 KICKOFF=$(cat <<KICKOFF_EOF
-## Task: Build a Mini GPT from Scratch in Rust
+## Task
 
-Build a **working transformer language model** in pure Rust. No ML framework crates.
-After \`cargo run\`, it trains on text and generates coherent output.
+Build a working GPT-style transformer language model from scratch in Rust.
 
-### Hard Constraints
-- **No ML deps**: no tch, candle, burn, ndarray. Only \`rand\` crate allowed.
-- **Single binary**: \`cargo run\` trains the model and generates text.
-- **Character-level tokenizer** (like Karpathy's nanoGPT char-level).
-- **Bundled training data**: embed a small text corpus (~50KB) as a string constant or include_str!. Use a Shakespeare excerpt or similar public domain text.
-- **Working output**: after training (~30-60 seconds), generate 500 characters that show learned language patterns (not random garbage).
+**The goal**: \`cargo run\` trains on text and generates coherent English output. That's it.
 
-### Model Spec
-- Embedding dim: 64-128
-- Attention heads: 4
-- Transformer layers: 2-4
-- Context window: 64-128 tokens
-- Vocab: all unique chars in the training text (~65 for Shakespeare)
+**Constraints**:
+- Pure Rust. No ML framework crates (no tch, candle, burn, ndarray). \`rand\` is fine.
+- Single binary. Training data bundled in the source (Shakespeare or similar public domain).
+- Must finish training in under 2 minutes on a laptop.
+- Smallest, cleanest implementation you can design. Minimize code, maximize clarity.
 
-### What to Implement (bottom-up)
+**Exit condition**: You are done when \`cargo run\` produces generated text with recognizable English words and patterns. Not when the code is written — when it WORKS. If it fails, debug and fix. Keep iterating.
 
-**Layer 1 — Tensor foundations (no autograd yet, just forward ops):**
-- \`Tensor\` struct: 2D f32 matrix with shape tracking
-- Ops: matmul, transpose, add, element-wise multiply, softmax, layer_norm
-- Activations: GELU or ReLU
-
-**Layer 2 — Neural network building blocks:**
-- \`Linear\` layer: weight matrix + bias, forward pass
-- \`Embedding\` layer: lookup table (vocab_size x embed_dim)
-- \`LayerNorm\`: normalize across features
-
-**Layer 3 — Transformer components:**
-- Scaled dot-product attention with causal mask
-- Multi-head attention (split heads, attend, concat, project)
-- Feed-forward network (Linear → GELU → Linear)
-- Residual connections
-
-**Layer 4 — Full model:**
-- \`TransformerBlock\`: LayerNorm → MultiHeadAttention → residual → LayerNorm → FFN → residual
-- \`GPT\`: token embedding + position embedding → N transformer blocks → LayerNorm → linear projection to vocab
-- Forward pass: input token IDs → logits over vocab
-
-**Layer 5 — Training:**
-- Cross-entropy loss (manual implementation)
-- **Backpropagation**: this is the hardest part. Implement manual gradient computation for each operation. Use a simple approach: store intermediate values during forward pass, compute gradients layer by layer in reverse.
-- Optimizer: SGD with learning rate (Adam is better but SGD works for a demo)
-- Training loop: sample random windows from text, forward, loss, backward, update weights
-- Print loss every N steps to show it's decreasing
-
-**Layer 6 — Inference:**
-- Temperature-based sampling from output logits
-- Generate character by character, feeding output back as input
-- Start from a seed string
-
-### Quality Expectations
-- \`cargo build\` must compile with zero errors
-- Training loss must visibly decrease over epochs
-- Generated text should contain recognizable English words/patterns (not random chars)
-- Code must be well-organized: one file per module (tensor.rs, attention.rs, model.rs, train.rs, etc.)
-
-### Using PlanDB
-
-You are in $(pwd). PLANDB_DB=$PLANDB_DB is set. Run plandb commands directly.
-
-1. \`plandb init "mini-gpt-rust"\`
-2. Decompose this into tasks with dependencies and detailed descriptions. Use the layer structure above as a guide but decompose further where needed.
-3. Use \`--pre\` and \`--post\` conditions. Example: \`--post "cargo build compiles with no errors"\`
-4. Use \`plandb critical-path\` to prioritize. Tensor ops are on the critical path — everything depends on them.
-5. Parallelize independent implementations (attention + FFN + layernorm can be parallel once tensor ops exist).
-6. If backprop is too complex in one task, split it: \`plandb split --into "Linear backward > Attention backward > FFN backward > Full backward pass"\`
-
-### CRITICAL: It Must Work
-
-You are NOT done when the code is written. You are done when \`cargo run\` trains a model and generates recognizable English text. That is the only exit condition.
-
-Run it. If it fails for any reason — compile errors, runtime crashes, garbage output, loss not decreasing — debug and fix. Keep iterating until it works. The final PlanDB task should verify this end-to-end.
+**Using PlanDB**: You are in $(pwd). PLANDB_DB=$PLANDB_DB is set. Use plandb to plan, decompose, and track this project. Design the architecture and decomposition yourself — figure out the most efficient approach, what can be parallelized, what's on the critical path.
 
 Start now.
 KICKOFF_EOF
