@@ -214,6 +214,13 @@ pub enum Commands {
         #[arg(long, help = "Project ID (uses default if not set)")]
         project: Option<String>,
     },
+    #[command(about = "Live-watch project progress (refreshes every N seconds)")]
+    Watch {
+        #[arg(long, help = "Project ID (uses default if not set)")]
+        project: Option<String>,
+        #[arg(long, default_value_t = 2, help = "Refresh interval in seconds")]
+        interval: u64,
+    },
     #[command(hide = true, about = "Alias for 'status'")]
     Overview,
     #[command(hide = true, about = "Alias for 'task start'")]
@@ -446,6 +453,36 @@ pub fn run(db: &Database, command: Commands, json: bool, compact: bool) -> Resul
                 for u in &unlocked {
                     println!("  → {} {} [{}]", u.task_id, u.title, u.status);
                 }
+            }
+            Ok(())
+        }
+        Commands::Watch {
+            project,
+            interval,
+        } => {
+            let project_id = resolve_project_id(db, project.as_deref())?;
+            loop {
+                // Clear screen
+                print!("\x1b[2J\x1b[H");
+                let _ = project::status_cmd(db, Some(&project_id), true, false, json, compact);
+                // Show ready count for parallelization hint
+                let ready = crate::db::list_tasks(db, crate::db::TaskListFilters {
+                    project_id: Some(project_id.clone()),
+                    status: Some(crate::models::TaskStatus::Ready),
+                    ..Default::default()
+                })?;
+                if ready.len() > 1 {
+                    eprintln!();
+                    eprintln!("  {} tasks ready — parallelize!", ready.len());
+                }
+                // Check if done
+                let state = crate::db::project_state(db, &project_id)?;
+                if state.done == state.total && state.total > 0 {
+                    eprintln!();
+                    eprintln!("  all tasks complete!");
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_secs(interval));
             }
             Ok(())
         }
