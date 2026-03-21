@@ -4,9 +4,9 @@
 
 # PlanDB
 
-### **SQLite for agent orchestration.**
+### **Agent-native compound task graph.**
 
-*The task graph primitive that makes AI agents coordinate without infrastructure.*
+*Agents plan, decompose, parallelize, and adapt — autonomously.*
 
 [![Stars](https://img.shields.io/github/stars/Agent-Field/plandb?style=flat&logo=github&logoColor=white&color=7c3aed&labelColor=1e1e2e)](https://github.com/Agent-Field/plandb/stargazers)
 [![License](https://img.shields.io/badge/license-Apache%202.0-7c3aed.svg?style=flat&labelColor=1e1e2e)](LICENSE)
@@ -18,9 +18,7 @@
 
 ---
 
-No daemon. No config. No network. A single binary creates a `.plandb.db` file — that file **is** the coordination layer: task graph, dependency engine, work queue, handoff protocol, and audit log.
-
-Agents decompose work, track dependencies, parallelize safely, and adapt plans mid-flight. The graph structure itself is the scheduling algorithm — `ready` tasks are what can run now, `pending` tasks are what's blocked, and the compound graph tells you exactly what's safe to parallelize.
+A single binary. Zero infrastructure. PlanDB gives AI agents a compound task graph — recursive hierarchy with cross-level dependencies — so they can decompose complex work, parallelize safely, and adapt plans mid-flight. The graph structure itself is the scheduling algorithm: `ready` = run now, `pending` = blocked, multiple `ready` = parallelize.
 
 ## Why PlanDB
 
