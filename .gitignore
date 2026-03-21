@@ -11,3 +11,5 @@ experiments/*/__pycache__/
 docs/plans/
 .worktrees/
 docs-site-*/
+mini-gpt-rust/target/
+mini-gpt-rust/training_log.csv
