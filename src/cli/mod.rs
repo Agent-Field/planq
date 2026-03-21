@@ -156,9 +156,10 @@ pub enum Commands {
     #[command(
         about = "Show project progress: done/total, ready tasks, running agents.\n\n\
                   Three detail levels:\n\
-                  \x20 plandb status             One-line summary with counts\n\
-                  \x20 plandb status --detail     Per-task breakdown with status icons\n\
-                  \x20 plandb status --full       All tasks + dependency edges"
+                  \x20 plandb status              One-line summary with counts\n\
+                  \x20 plandb status --detail      Per-task breakdown with status icons\n\
+                  \x20 plandb status --full        Compound graph: containment tree + dependencies\n\
+                  \x20 plandb status --full --verbose  Everything: descriptions, notes, results, conditions"
     )]
     Status {
         #[arg(long, help = "Project ID (uses default if not set)")]
@@ -167,6 +168,8 @@ pub enum Commands {
         detail: bool,
         #[arg(long, help = "Show all tasks and dependencies")]
         full: bool,
+        #[arg(long, short = 'v', help = "With --full: include descriptions, notes, results, conditions")]
+        verbose: bool,
     },
     #[command(about = "Claim + start next ready task (shortcut for 'plandb task go')")]
     Go(GoArgs),
@@ -361,7 +364,8 @@ pub fn run(db: &Database, command: Commands, json: bool, compact: bool) -> Resul
             project,
             detail,
             full,
-        } => project::status_cmd(db, project.as_deref(), detail, full, json, compact),
+            verbose,
+        } => project::status_cmd(db, project.as_deref(), detail, full, verbose, json, compact),
         Commands::Go(args) => task::go_cmd(db, &args, json),
         Commands::Done(args) => task::done_cmd(db, args, json, compact),
         Commands::List(args) => task::list_tasks_cmd(db, args, json, compact),
@@ -473,7 +477,7 @@ pub fn run(db: &Database, command: Commands, json: bool, compact: bool) -> Resul
             loop {
                 // Clear screen
                 print!("\x1b[2J\x1b[H");
-                let _ = project::status_cmd(db, Some(&project_id), true, false, json, compact);
+                let _ = project::status_cmd(db, Some(&project_id), true, false, false, json, compact);
                 // Show ready count for parallelization hint
                 let ready = crate::db::list_tasks(db, crate::db::TaskListFilters {
                     project_id: Some(project_id.clone()),
@@ -495,7 +499,7 @@ pub fn run(db: &Database, command: Commands, json: bool, compact: bool) -> Resul
             }
             Ok(())
         }
-        Commands::Overview => project::status_cmd(db, None, false, false, json, compact),
+        Commands::Overview => project::status_cmd(db, None, false, false, false, json, compact),
         Commands::Start(args) => {
             let task = crate::db::start_task(db, &args.task_id)?;
             if json {

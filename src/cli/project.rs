@@ -1,6 +1,7 @@
 use crate::cli::{parse_project_status, print_json, print_table, resolve_project_id, status_icon};
 use crate::db::{
-    get_project, list_dependencies, list_projects, list_tasks, set_meta, Database, TaskListFilters,
+    get_project, list_dependencies, list_notes, list_projects, list_tasks, set_meta, Database,
+    TaskListFilters,
 };
 use crate::models::{ProjectStatus, TaskStatus};
 use anyhow::Result;
@@ -181,6 +182,7 @@ pub fn status_cmd(
     project: Option<&str>,
     detail: bool,
     full: bool,
+    verbose: bool,
     json: bool,
     compact: bool,
 ) -> Result<()> {
@@ -323,6 +325,32 @@ pub fn status_cmd(
                     task.status,
                     agent
                 );
+                if verbose {
+                    if let Some(desc) = &task.description {
+                        for line in desc.lines() {
+                            println!("      {line}");
+                        }
+                    }
+                    if let Some(pre) = &task.pre_condition {
+                        println!("      pre: {pre}");
+                    }
+                    if let Some(post) = &task.post_condition {
+                        println!("      post: {post}");
+                    }
+                    if let Some(result) = &task.result {
+                        println!("      result: {result}");
+                    }
+                    if let Some(err) = &task.error {
+                        println!("      error: {err}");
+                    }
+                    if let Ok(notes) = list_notes(db, &task.id) {
+                        for note in notes {
+                            let agent_tag = note.agent_id.as_deref().unwrap_or("?");
+                            println!("      note(@{agent_tag}): {}", note.content);
+                        }
+                    }
+                    println!();
+                }
             }
             if !all_deps.is_empty() {
                 println!();

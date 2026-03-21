@@ -45,6 +45,7 @@ fn main() {
                         Some(&project_id),
                         false,
                         false,
+                        false,
                         cli.json,
                         cli.compact,
                     ) {
@@ -283,13 +284,14 @@ plandb import template.yaml            # apply pattern to current project
 
 ### Status
 ```bash
-plandb status              # progress summary
-plandb status --detail     # per-task breakdown with dependency tree
-plandb status --full       # containment tree + dependency edges (compound graph)
-plandb list --status ready # what can run now
-plandb show t-abc          # full task details + description
-plandb ahead               # what's next
-plandb --json -c status    # compact JSON for LLM context
+plandb status                    # progress summary
+plandb status --detail           # per-task breakdown with dependency tree
+plandb status --full             # containment tree + dependency edges (compound graph)
+plandb status --full --verbose   # everything: descriptions, notes, results, conditions
+plandb list --status ready       # what can run now
+plandb show t-abc                # full task details + description
+plandb ahead                     # what's next
+plandb --json -c status          # compact JSON for LLM context
 ```
 
 ### Plan Adaptation
@@ -309,6 +311,10 @@ After completing each task, reassess the plan:
 3. Consider: add new tasks, split complex ones, amend descriptions with discoveries
 4. Plans are hypotheses. Execution reveals reality. The graph should evolve.
 
+### Discovery
+Run `plandb --help` or `plandb <command> --help` to discover all available commands and options.
+PlanDB has many capabilities beyond what's listed here — use help to explore.
+
 ### Reference
 - **States**: pending → ready (deps done) → claimed → running → done/failed/cancelled
 - **Dep types**: `feeds_into` (data flows), `blocks` (ordering), `suggests` (soft)
@@ -317,7 +323,9 @@ After completing each task, reassess the plan:
 - **Output**: `--json` for structured, `-c` for compact, default human-readable
 - **Handoff**: `--result` on `done` passes data to downstream tasks via `go`
 - **Descriptions**: always use `--description` — it's the actual work spec, not the title
-- **Quality gates**: `--pre` and `--post` on tasks for explicit expectations"#
+- **Quality gates**: `--pre` and `--post` on tasks for explicit verification criteria.
+  Pre-conditions are shown when you claim a task (`go`). Post-conditions are shown
+  when you complete it (`done`). Use these to enforce verification before moving on."#
     );
 }
 

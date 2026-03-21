@@ -37,6 +37,7 @@ plandb split --into "A, B, C"                                # split into indepe
 plandb split --into "A > B > C"                              # split into dependency chain
 plandb status --detail                                       # dependency tree view
 plandb status --full                                         # containment tree + dependency edges
+plandb status --full --verbose                               # everything: descriptions, notes, results, conditions
 plandb show <task-id>                                        # full task details + description
 plandb list --status ready                                   # all tasks that can run NOW
 plandb task add-dep --after t-upstream t-downstream          # add dependency (use --after flag, NOT positional)
@@ -110,3 +111,13 @@ PLANDB_AGENT=worker-N plandb done         # complete
 
 PlanDB handles coordination: atomic claiming prevents double-assignment, dependencies
 enforced automatically. The graph tells you exactly what is safe to run concurrently.
+
+## Discovery
+
+Run `plandb --help` or `plandb <command> --help` to discover all available commands
+and options. PlanDB has many capabilities beyond what is listed here — use help to
+explore when you need something specific.
+
+Quality gates (`--pre` and `--post`) are shown automatically: pre-conditions when
+you claim a task (`go`), post-conditions when you complete it (`done`). Always verify
+post-conditions before marking work done.
