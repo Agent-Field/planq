@@ -122,21 +122,11 @@ You are in $(pwd). PLANDB_DB=$PLANDB_DB is set. Run plandb commands directly.
 5. Parallelize independent implementations (attention + FFN + layernorm can be parallel once tensor ops exist).
 6. If backprop is too complex in one task, split it: \`plandb split --into "Linear backward > Attention backward > FFN backward > Full backward pass"\`
 
-### CRITICAL: Verification Loop
+### CRITICAL: It Must Work
 
-You are NOT done until the model works end-to-end. After implementing everything:
+You are NOT done when the code is written. You are done when \`cargo run\` trains a model and generates recognizable English text. That is the only exit condition.
 
-1. Run \`cargo build\` — fix ALL compile errors. Do not move on until it compiles cleanly.
-2. Run \`cargo run\` — the program must train and generate text.
-3. **Check the output**: training loss must decrease over steps. Generated text must contain recognizable English words, not random characters.
-4. If it doesn't compile: read the errors, fix them, rebuild. Repeat until clean.
-5. If it compiles but crashes at runtime: debug, fix, rerun. Repeat until it runs to completion.
-6. If it runs but generates garbage: the model or training has a bug. Check gradient computation, learning rate, loss function. Fix and retrain.
-7. If loss doesn't decrease: learning rate may be wrong, gradients may be zero, or the backward pass has a bug. Debug and fix.
-
-**Keep iterating until \`cargo run\` produces output where you can read English words in the generated text.** This is your exit condition — not "I wrote all the code." The code must WORK.
-
-Add a final task in PlanDB: \`plandb add "Verify end-to-end" --post "cargo run compiles, trains with decreasing loss, and generates recognizable English text" --description "Run cargo run. Verify: 1) compiles 2) loss decreases 3) generated text has English words. If any fail, debug and fix until all three pass."\`
+Run it. If it fails for any reason — compile errors, runtime crashes, garbage output, loss not decreasing — debug and fix. Keep iterating until it works. The final PlanDB task should verify this end-to-end.
 
 Start now.
 KICKOFF_EOF
